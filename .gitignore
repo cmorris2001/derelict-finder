@@ -1,0 +1,26 @@
+# dependencies
+node_modules/
+
+# Vercel
+.vercel/
+
+# build output
+build/
+dist/
+.next/
+
+# env files
+.env
+.env.local
+.env.production
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# VS Code
+.vscode/
+
+# Supabase binary
+supabase.exe
+
