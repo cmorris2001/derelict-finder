@@ -1,81 +1,322 @@
 import React, { useState } from 'react'
 import { supabase, supabaseAnonKey } from './supabaseClient'
 
+// Our 5 fixed archetypes
+const HOME_VARIANTS = [
+  {
+    key: 'bungalow',
+    label: 'Bungalow',
+    suffix:
+      'a single-storey bungalow, compact footprint, pitched roof, simple and welcoming, suited to Irish suburbs'
+  },
+  {
+    key: 'two_storey',
+    label: '2-storey home',
+    suffix:
+      'a modern two-storey detached family home, pitched roof, balanced windows, comfortable proportions'
+  },
+  {
+    key: 'attached_garage',
+    label: '1-storey + attached garage',
+    suffix:
+      'a single-storey home with an attached single-car garage on one side, neat and practical'
+  },
+  {
+    key: 'detached_garage',
+    label: '1-storey + detached garage',
+    suffix:
+      'a single-storey home with a small detached garage elsewhere on the plot, leaving a clear front elevation'
+  },
+  {
+    key: 'wild',
+    label: 'Bold concept',
+    suffix:
+      'a bold contemporary concept home, interesting geometry, generous glazing, still realistic and buildable'
+  }
+]
+
 function AIReimager({ site, onClose }) {
-  const [prompt, setPrompt] = useState('')
+  const hasPhoto = !!site?.photo_url
+
+  const [notes, setNotes] = useState('')          // optional extra text from user
   const [generating, setGenerating] = useState(false)
-  const [generatedImage, setGeneratedImage] = useState(null)
+  const [progress, setProgress] = useState(0)     // 0–100
+  const [status, setStatus] = useState('')
   const [error, setError] = useState(null)
 
-  const hasPhoto = !!site?.photo_url
-  const [mode, setMode] = useState(hasPhoto ? 'preserve' : 'newbuild') // 'preserve' | 'newbuild'
-  const [strength, setStrength] = useState(0.4)
+  const [results, setResults] = useState([])      // [{ key, label, url }]
+  const [selected, setSelected] = useState(null)  // { key, label, url } or null
+  const [currentIndex, setCurrentIndex] = useState(-1) // which variant we’re currently generating
+
+  const resetStateForGeneration = () => {
+    setGenerating(true)
+    setProgress(0)
+    setStatus('Starting reimagination…')
+    setResults([])
+    setSelected(null)
+    setError(null)
+    setCurrentIndex(-1)
+  }
 
   const handleGenerate = async () => {
-    setGenerating(true)
-    setGeneratedImage(null)
-    setError(null)
+    if (generating) return
+    resetStateForGeneration()
 
     try {
-      const { data, error } = await supabase.functions.invoke('generate-image', {
-        body: {
-          prompt,
-          mode,
-          imageUrl: hasPhoto ? site.photo_url : undefined,
-          strength: Number(strength)
-        },
-        headers: {
-          Authorization: `Bearer ${supabaseAnonKey}`
+      const basePrompt = [
+        'Design a new home on this derelict site.',
+        'Use the same camera angle as the original photo, realistic materials and lighting.',
+        'High quality architectural visualization, realistic Irish context.'
+      ].join(' ')
+
+      for (let i = 0; i < HOME_VARIANTS.length; i++) {
+        const variant = HOME_VARIANTS[i]
+        setCurrentIndex(i)
+        setStatus(`Generating ${variant.label} (${i + 1}/${HOME_VARIANTS.length})…`)
+
+        const fullPrompt = [
+          basePrompt,
+          notes?.trim() ? `Extra notes: ${notes.trim()}.` : '',
+          variant.suffix
+        ]
+          .filter(Boolean)
+          .join(' ')
+
+        // we keep sending mode/strength for compatibility with your existing edge function
+        const mode = hasPhoto ? 'preserve' : 'newbuild'
+        const strength = hasPhoto ? 0.35 : 0.7
+
+        const { data, error } = await supabase.functions.invoke('generate-image', {
+          body: {
+            prompt: fullPrompt,
+            mode,
+            strength,
+            imageUrl: hasPhoto ? site.photo_url : undefined
+          },
+          headers: {
+            Authorization: `Bearer ${supabaseAnonKey}`
+          }
+        })
+
+        if (error) {
+          const details =
+            typeof error?.context?.body === 'string'
+              ? error.context.body
+              : JSON.stringify(error?.context?.body || {}, null, 2)
+          throw new Error(details)
         }
-      })
 
-      if (error) {
-        const details = typeof error?.context?.body === 'string'
-          ? error.context.body
-          : JSON.stringify(error?.context?.body || {}, null, 2)
-        throw new Error(`Edge Function error\n${details}`)
+        const url =
+          data?.imageUrl ||
+          (Array.isArray(data?.images) && data.images[0]) ||
+          null
+
+        if (!url) {
+          throw new Error(`No image returned for ${variant.label}`)
+        }
+
+        // append this result
+        setResults(prev => {
+          const next = [...prev, { key: variant.key, label: variant.label, url }]
+          // select the first generated option automatically
+          if (next.length === 1) {
+            setSelected(next[0])
+          }
+          return next
+        })
+
+        const pct = Math.round(((i + 1) / HOME_VARIANTS.length) * 100)
+        setProgress(pct)
       }
 
-      if (data?.error === 'billing_required') {
-        throw new Error('Replicate billing required. Add credit and try again.')
-      }
-
-      if (!data?.imageUrl) {
-        throw new Error('No image returned from Edge Function.')
-      }
-
-      setGeneratedImage(data.imageUrl)
+      setStatus('All concepts generated ✔')
     } catch (e) {
       console.error(e)
-      setError(e.message || 'Failed to generate')
-      alert('Error generating image: ' + (e.message || e))
+      setError(e.message || 'Failed to generate images')
+      setStatus('Something went wrong.')
     } finally {
       setGenerating(false)
+      setCurrentIndex(-1)
+      if (progress < 100 && !error) {
+        setProgress(100)
+      }
     }
   }
 
-  return (
-    <div style={{
-      position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.8)',
-      display: 'flex', justifyContent: 'center', alignItems: 'center',
-      zIndex: 3000, padding: 20
-    }}>
-      <div style={{
-        background: 'white', padding: 30, borderRadius: 12,
-        width: '90%', maxWidth: 900, maxHeight: '90vh', overflow: 'auto',
-        boxShadow: '0 4px 20px rgba(0,0,0,0.3)'
-      }}>
-        <h2 style={{ marginTop: 0 }}>✨ Reimagine: {site?.name}</h2>
+  const handleCardClick = (variantKey) => {
+    const found = results.find(r => r.key === variantKey)
+    if (found) setSelected(found)
+  }
 
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20, marginBottom: 20 }}>
+  const renderProgress = () => {
+    if (!generating) return null
+    return (
+      <div style={{ margin: '12px 0 8px' }}>
+        <div
+          style={{
+            height: 8,
+            borderRadius: 999,
+            backgroundColor: '#eee',
+            overflow: 'hidden'
+          }}
+        >
+          <div
+            style={{
+              width: `${progress}%`,
+              height: '100%',
+              backgroundColor: '#4CAF50',
+              transition: 'width 0.3s ease'
+            }}
+          />
+        </div>
+        <small style={{ color: '#555' }}>{status}</small>
+      </div>
+    )
+  }
+
+  const renderOptionGrid = () => (
+    <div style={{ marginTop: 18 }}>
+      <h3 style={{ marginBottom: 8 }}>Concept options</h3>
+      <p style={{ fontSize: 14, color: '#555', marginBottom: 10 }}>
+        You&apos;ll get one concept for each type: bungalow, 2-storey, attached garage,
+        detached garage, and a bold unique design.
+      </p>
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fill, minmax(170px, 1fr))',
+          gap: 12
+        }}
+      >
+        {HOME_VARIANTS.map((variant, i) => {
+          const result = results.find(r => r.key === variant.key)
+          const isSelected = selected?.key === variant.key
+          const isGeneratingThis = generating && currentIndex === i
+
+          return (
+            <div
+              key={variant.key}
+              onClick={() => result && handleCardClick(variant.key)}
+              style={{
+                border: isSelected ? '3px solid #4CAF50' : '2px solid #ddd',
+                borderRadius: 8,
+                overflow: 'hidden',
+                backgroundColor: '#fafafa',
+                cursor: result ? 'pointer' : 'default',
+                display: 'flex',
+                flexDirection: 'column'
+              }}
+            >
+              <div style={{ width: '100%', height: 130, backgroundColor: '#eee' }}>
+                {result ? (
+                  <img
+                    src={result.url}
+                    alt={variant.label}
+                    style={{
+                      width: '100%',
+                      height: '100%',
+                      objectFit: 'cover',
+                      display: 'block'
+                    }}
+                  />
+                ) : (
+                  <div
+                    style={{
+                      width: '100%',
+                      height: '100%',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      color: '#777',
+                      fontSize: 13,
+                      padding: '0 6px',
+                      textAlign: 'center'
+                    }}
+                  >
+                    {isGeneratingThis
+                      ? `Generating ${variant.label}…`
+                      : generating && i > currentIndex
+                        ? 'Waiting…'
+                        : 'Not generated yet'}
+                  </div>
+                )}
+              </div>
+              <div style={{ padding: '6px 8px 8px' }}>
+                <strong style={{ fontSize: 13 }}>{variant.label}</strong>
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+
+  const selectedImageUrl = selected?.url || null
+
+  return (
+    <div
+      style={{
+        position: 'fixed',
+        inset: 0,
+        backgroundColor: 'rgba(0,0,0,0.8)',
+        display: 'flex',
+        justifyContent: 'center',
+        alignItems: 'center',
+        zIndex: 3000,
+        padding: 20
+      }}
+    >
+      <div
+        style={{
+          backgroundColor: 'white',
+          padding: 30,
+          borderRadius: 12,
+          width: '95%',
+          maxWidth: 1100,
+          maxHeight: '95vh',
+          overflow: 'auto',
+          boxShadow: '0 4px 20px rgba(0,0,0,0.3)'
+        }}
+      >
+        <h2 style={{ marginTop: 0, color: 'red' }}>✨ NEW REIMAGINE UI TEST: {site?.name}</h2>
+
+
+        {/* Top row: original + selected */}
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: '1fr 1fr',
+            gap: 16,
+            marginBottom: 16
+          }}
+        >
           <div>
             <h3>Original Derelict Site</h3>
             {hasPhoto ? (
-              <img src={site.photo_url} alt={site?.name || 'Site photo'}
-                   style={{ width: '100%', height: 250, objectFit: 'cover', borderRadius: 8, border: '2px solid #ddd' }} />
+              <img
+                src={site.photo_url}
+                alt={site?.name || 'Site photo'}
+                style={{
+                  width: '100%',
+                  height: 260,
+                  objectFit: 'cover',
+                  borderRadius: 8,
+                  border: '2px solid #ddd'
+                }}
+              />
             ) : (
-              <div style={{ width: '100%', height: 250, background: '#f0f0f0',
-                display: 'flex', justifyContent: 'center', alignItems: 'center', borderRadius: 8 }}>
+              <div
+                style={{
+                  width: '100%',
+                  height: 260,
+                  backgroundColor: '#f0f0f0',
+                  borderRadius: 8,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  color: '#666'
+                }}
+              >
                 No photo available
               </div>
             )}
@@ -83,94 +324,128 @@ function AIReimager({ site, onClose }) {
 
           <div>
             <h3>AI Reimagined</h3>
-            {generatedImage ? (
-              <img src={generatedImage} alt="AI Generated"
-                   style={{ width: '100%', height: 250, objectFit: 'cover',
-                   borderRadius: 8, border: '2px solid #4CAF50' }} />
+            {selectedImageUrl ? (
+              <img
+                src={selectedImageUrl}
+                alt="Selected concept"
+                style={{
+                  width: '100%',
+                  height: 260,
+                  objectFit: 'cover',
+                  borderRadius: 8,
+                  border: '2px solid #4CAF50'
+                }}
+              />
             ) : (
-              <div style={{ width: '100%', height: 250, background: '#f0f0f0',
-                display: 'flex', justifyContent: 'center', alignItems: 'center',
-                borderRadius: 8, color: '#666' }}>
-                {generating ? '🎨 Generating...' : 'Click generate to see magic'}
+              <div
+                style={{
+                  width: '100%',
+                  height: 260,
+                  backgroundColor: '#f5f5f5',
+                  borderRadius: 8,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  color: '#666',
+                  textAlign: 'center',
+                  padding: '0 10px'
+                }}
+              >
+                {generating
+                  ? '🎨 Generating concepts…'
+                  : 'Click “Generate Reimagination” to see 5 concept options for this site.'}
               </div>
             )}
           </div>
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, alignItems: 'end', marginBottom: 16 }}>
-          <div>
-            <label style={{ display: 'block', fontWeight: 'bold', marginBottom: 6 }}>Mode</label>
-            <select
-              value={mode}
-              onChange={(e) => setMode(e.target.value)}
-              style={{ width: '100%', padding: 10, borderRadius: 6, border: '1px solid #ccc' }}
-            >
-              <option value="preserve" disabled={!hasPhoto}>Preserve existing structure (img2img)</option>
-              <option value="newbuild">New build on site (text-to-image)</option>
-            </select>
-            {!hasPhoto && <small style={{ color: '#666' }}>No photo: using New build mode.</small>}
-          </div>
+        {renderProgress()}
 
-          <div>
-            <label style={{ display: 'block', fontWeight: 'bold', marginBottom: 6 }}>
-              Change amount ({strength})
-            </label>
-            <input type="range" min="0.1" max="0.95" step="0.05"
-                   value={strength} onChange={(e) => setStrength(e.target.value)}
-                   disabled={mode !== 'preserve'} style={{ width: '100%' }} />
-            <small style={{ color: '#666' }}>
-              Lower = keep more of original shapes. Try 0.3–0.5 to preserve the building massing.
-            </small>
+        {error && (
+          <div
+            style={{
+              marginBottom: 10,
+              padding: '8px 10px',
+              borderRadius: 6,
+              backgroundColor: '#ffe6e6',
+              color: '#b71c1c',
+              fontSize: 14
+            }}
+          >
+            {String(error)}
           </div>
-        </div>
+        )}
 
-        <div style={{ marginBottom: 16 }}>
-          <label style={{ display: 'block', marginBottom: 10, fontWeight: 'bold' }}>
-            How would you like to reimagine this site?
+        {/* Notes + main button row */}
+        <div style={{ marginBottom: 14 }}>
+          <label
+            style={{
+              display: 'block',
+              marginBottom: 6,
+              fontWeight: 'bold'
+            }}
+          >
+            Optional extra notes for the architect
           </label>
           <textarea
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
-            placeholder={mode === 'preserve'
-              ? 'e.g., renovate facade with timber and glass, open porch, new windows'
-              : 'e.g., modern two-storey house, white render, large windows, pitched roof'}
-            rows={3}
-            style={{ width: '100%', padding: 12, border: '1px solid #ccc', borderRadius: 6, fontSize: 16, fontFamily: 'inherit' }}
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            placeholder="e.g., keep some existing trees, use brick and slate, add good parking..."
+            rows={2}
+            style={{
+              width: '100%',
+              padding: 10,
+              borderRadius: 6,
+              border: '1px solid #ccc',
+              fontSize: 15,
+              fontFamily: 'inherit'
+            }}
           />
         </div>
 
-        {error && <div style={{ marginBottom: 12, color: '#d32f2f', fontSize: 14 }}>{String(error)}</div>}
-
-        <div style={{ display: 'flex', gap: 10 }}>
+        <div
+          style={{
+            display: 'flex',
+            gap: 10,
+            marginBottom: 10
+          }}
+        >
           <button
             onClick={handleGenerate}
-            disabled={!prompt || generating}
+            disabled={generating}
             style={{
-              flex: 1, padding: 12,
-              backgroundColor: (!prompt || generating) ? '#ccc' : '#4CAF50',
-              color: 'white', border: 'none', borderRadius: 6, fontSize: 16, fontWeight: 'bold',
-              cursor: (!prompt || generating) ? 'not-allowed' : 'pointer'
+              flex: 1,
+              padding: 12,
+              backgroundColor: generating ? '#ccc' : '#4CAF50',
+              color: 'white',
+              border: 'none',
+              borderRadius: 6,
+              fontSize: 16,
+              fontWeight: 'bold',
+              cursor: generating ? 'not-allowed' : 'pointer'
             }}
           >
-            {generating ? '✨ Generating…' : '🎨 Generate Reimagination'}
+            {generating ? '✨ Generating reimagination…' : '🎨 Generate Reimagination'}
           </button>
-          <button onClick={onClose} disabled={generating}
-                  style={{ padding: '12px 24px', background: '#666', color: 'white',
-                  border: 0, borderRadius: 6, fontSize: 16, fontWeight: 'bold',
-                  cursor: generating ? 'not-allowed' : 'pointer' }}>
+          <button
+            onClick={onClose}
+            disabled={generating}
+            style={{
+              padding: '12px 24px',
+              backgroundColor: '#666',
+              color: 'white',
+              border: 'none',
+              borderRadius: 6,
+              fontSize: 16,
+              fontWeight: 'bold',
+              cursor: generating ? 'not-allowed' : 'pointer'
+            }}
+          >
             Close
           </button>
         </div>
 
-        {generatedImage && (
-          <div style={{ marginTop: 20, textAlign: 'center' }}>
-            <a href={generatedImage} download="reimagined-site.png"
-               style={{ display: 'inline-block', padding: '10px 20px', background: '#2196F3',
-               color: 'white', textDecoration: 'none', borderRadius: 6, fontWeight: 'bold' }}>
-              💾 Download Reimagined Image
-            </a>
-          </div>
-        )}
+        {renderOptionGrid()}
       </div>
     </div>
   )
