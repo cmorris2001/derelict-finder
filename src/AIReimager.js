@@ -278,7 +278,7 @@ function AIReimager({ site, onClose }) {
           boxShadow: '0 4px 20px rgba(0,0,0,0.3)'
         }}
       >
-        <h2 style={{ marginTop: 0, color: 'red' }}>✨ NEW REIMAGINE UI TEST: {site?.name}</h2>
+        <h2 style={{ marginTop: 0, color: 'black' }}>✨ NEW REIMAGINE {site?.name}</h2>
 
 
         {/* Top row: original + selected */}

@@ -6,6 +6,7 @@ import { supabase } from './supabaseClient'
 import SiteForm from './SiteForm'
 import AIReimager from './AIReimager'
 import AdminDashboard from './AdminDashboard'
+import ProfileScreen from './ProfileScreen'   // 👈 NEW
 
 // fix marker icons in React-Leaflet
 delete L.Icon.Default.prototype._getIconUrl
@@ -35,6 +36,10 @@ function Map({ user, profile, onSignInClick }) {
   const [leaderboard, setLeaderboard] = useState([])
   const [showLeaderboard, setShowLeaderboard] = useState(false)
 
+  // NEW: favourites + profile modal
+  const [favoriteSiteIds, setFavoriteSiteIds] = useState([])
+  const [showProfile, setShowProfile] = useState(false)
+
   useEffect(() => {
     loadSites()
     loadLeaderboard()
@@ -50,6 +55,30 @@ function Map({ user, profile, onSignInClick }) {
       setIsAdmin(profile.is_admin || false)
     }
   }, [user, profile])
+
+  // NEW: load favourites whenever the user changes
+  useEffect(() => {
+    if (!user) {
+      setFavoriteSiteIds([])
+      return
+    }
+
+    const loadFavorites = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('favorites')
+          .select('site_id')
+          .eq('user_id', user.id)
+
+        if (error) throw error
+        setFavoriteSiteIds(data.map((f) => f.site_id))
+      } catch (err) {
+        console.error('Error loading favorites:', err)
+      }
+    }
+
+    loadFavorites()
+  }, [user])
 
   const loadSites = async () => {
     try {
@@ -147,6 +176,39 @@ function Map({ user, profile, onSignInClick }) {
     await supabase.auth.signOut()
   }
 
+  // NEW: toggle favourite
+  const toggleFavorite = async (siteId) => {
+    if (!user) {
+      alert('Sign in to favourite sites.')
+      return
+    }
+
+    const isFav = favoriteSiteIds.includes(siteId)
+
+    try {
+      if (isFav) {
+        const { error } = await supabase
+          .from('favorites')
+          .delete()
+          .eq('user_id', user.id)
+          .eq('site_id', siteId)
+
+        if (error) throw error
+        setFavoriteSiteIds(favoriteSiteIds.filter((id) => id !== siteId))
+      } else {
+        const { error } = await supabase
+          .from('favorites')
+          .insert([{ user_id: user.id, site_id: siteId }])
+
+        if (error) throw error
+        setFavoriteSiteIds([...favoriteSiteIds, siteId])
+      }
+    } catch (err) {
+      console.error('Error toggling favorite:', err)
+      alert('Error updating favourite: ' + err.message)
+    }
+  }
+
   if (loading) return (
     <div style={{
       display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh'
@@ -197,9 +259,19 @@ function Map({ user, profile, onSignInClick }) {
         </button>
 
         {profile && (
-          <div style={{ borderLeft: '1px solid #ddd', paddingLeft: 15 }}>
+          <button
+            onClick={() => setShowProfile(true)}
+            style={{
+              borderLeft: '1px solid #ddd',
+              paddingLeft: 15,
+              background: 'transparent',
+              border: 'none',
+              cursor: 'pointer',
+              fontSize: 14
+            }}
+          >
             👤 <strong>@{profile.username}</strong>
-          </div>
+          </button>
         )}
         
         {isAdmin && (
@@ -350,6 +422,26 @@ function Map({ user, profile, onSignInClick }) {
                 >
                   ✨ Reimagine with AI
                 </button>
+
+                {user && (
+                  <button
+                    onClick={() => toggleFavorite(site.id)}
+                    style={{
+                      marginTop: 8,
+                      width: '100%',
+                      padding: 6,
+                      background: favoriteSiteIds.includes(site.id) ? '#e91e63' : '#ffffff',
+                      color: favoriteSiteIds.includes(site.id) ? '#fff' : '#e91e63',
+                      border: '1px solid #e91e63',
+                      borderRadius: 6,
+                      fontSize: 13,
+                      fontWeight: 'bold',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    {favoriteSiteIds.includes(site.id) ? '♥ Favourited' : '♡ Add to favourites'}
+                  </button>
+                )}
               </div>
             </Popup>
           </Marker>
@@ -471,9 +563,20 @@ function Map({ user, profile, onSignInClick }) {
           )}
         </div>
       )}
+
+      {/* Profile modal */}
+      {showProfile && user && profile && (
+        <ProfileScreen
+          user={user}
+          profile={profile}
+          sites={sites}
+          favoriteSiteIds={favoriteSiteIds}
+          leaderboard={leaderboard}
+          onClose={() => setShowProfile(false)}
+        />
+      )}
     </div>
   )
 }
 
 export default Map
-

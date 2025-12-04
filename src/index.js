@@ -7,14 +7,14 @@ import 'leaflet/dist/leaflet.css'
 const root = createRoot(document.getElementById('root'))
 root.render(<App />)
 
-// Register service worker
-if ('serviceWorker' in navigator) {
+// Register service worker ONLY in production builds
+if (process.env.NODE_ENV === 'production' && 'serviceWorker' in navigator) {
   window.addEventListener('load', () => {
     navigator.serviceWorker
       .register('/service-worker.js')
       .then((registration) => {
         console.log('SW registered:', registration)
-        
+
         // Check for updates every hour
         setInterval(() => {
           registration.update()
