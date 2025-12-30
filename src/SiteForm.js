@@ -1,14 +1,18 @@
+// src/SiteForm.js
 import React, { useState } from 'react'
 import { supabase } from './supabaseClient'
 
 function SiteForm({ position, userId, onClose, onSiteAdded }) {
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
+  const [eircode, setEircode] = useState('')
   const [photo, setPhoto] = useState(null)
   const [uploading, setUploading] = useState(false)
+  const [error, setError] = useState(null)
 
   const handleSubmit = async (e) => {
     e.preventDefault()
+    setError(null)
     setUploading(true)
 
     try {
@@ -16,9 +20,9 @@ function SiteForm({ position, userId, onClose, onSiteAdded }) {
 
       // 1) Upload photo to Supabase Storage (if provided)
       if (photo) {
-        const ext = photo.name.split('.').pop()
-        const fileName = `${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`
-        const filePath = `sites/${fileName}`
+        const fileExt = photo.name.split('.').pop()
+        const fileName = `${Date.now()}-${Math.random().toString(36).slice(2)}.${fileExt}`
+        const filePath = fileName
 
         const { error: uploadError } = await supabase.storage
           .from('site-photos')
@@ -26,15 +30,15 @@ function SiteForm({ position, userId, onClose, onSiteAdded }) {
 
         if (uploadError) throw uploadError
 
-        const { data: publicData } = supabase.storage
+        const { data: publicUrlData } = supabase.storage
           .from('site-photos')
           .getPublicUrl(filePath)
 
-        photoUrl = publicData.publicUrl
+        photoUrl = publicUrlData.publicUrl
       }
 
-      // 2) Insert site row
-      const { data, error } = await supabase
+      // 2) Insert site into DB
+      const { data, error: insertError } = await supabase
         .from('derelict_sites')
         .insert([
           {
@@ -43,21 +47,21 @@ function SiteForm({ position, userId, onClose, onSiteAdded }) {
             latitude: position.lat,
             longitude: position.lng,
             photo_url: photoUrl,
-            user_id: userId,        // can be null if anonymous
-            status: 'pending',      // or 'approved' if you want auto-approve
+            user_id: userId,
+            eircode: eircode || null, // new field
+            status: 'pending',        // if you’re using pending/approved
           }
         ])
         .select()
         .single()
 
-      if (error) throw error
+      if (insertError) throw insertError
 
-      // 3) Update local state in Map
       onSiteAdded(data)
       onClose()
     } catch (err) {
       console.error('Error adding site:', err)
-      alert('Error adding site: ' + err.message)
+      setError(err.message || 'Failed to add site')
     } finally {
       setUploading(false)
     }
@@ -66,30 +70,32 @@ function SiteForm({ position, userId, onClose, onSiteAdded }) {
   return (
     <div style={{
       position: 'fixed',
-      inset: 0,
+      top: 0,
+      left: 0,
+      right: 0,
+      bottom: 0,
       backgroundColor: 'rgba(0,0,0,0.5)',
       display: 'flex',
       justifyContent: 'center',
       alignItems: 'center',
-      zIndex: 2000,
-      padding: 20
+      zIndex: 2000
     }}>
       <div style={{
-        backgroundColor: 'white',
-        padding: 30,
+        background: '#fff',
         borderRadius: 12,
-        width: '90%',
+        padding: 24,
+        width: '95%',
         maxWidth: 520,
         boxShadow: '0 4px 20px rgba(0,0,0,0.3)'
       }}>
-        <h2 style={{ marginTop: 0 }}>🏚️ Add Derelict Site</h2>
-        <p style={{ color: '#666', fontSize: 14, marginBottom: 15 }}>
+        <h2 style={{ marginTop: 0 }}>🏚️ Add a derelict site</h2>
+        <p style={{ fontSize: 14, color: '#666' }}>
           Location: {position.lat.toFixed(5)}, {position.lng.toFixed(5)}
         </p>
 
         <form onSubmit={handleSubmit}>
-          <div style={{ marginBottom: 15 }}>
-            <label style={{ display: 'block', marginBottom: 5, fontWeight: 'bold' }}>
+          <div style={{ marginBottom: 14 }}>
+            <label style={{ display: 'block', fontWeight: 'bold', marginBottom: 4 }}>
               Site name *
             </label>
             <input
@@ -97,81 +103,114 @@ function SiteForm({ position, userId, onClose, onSiteAdded }) {
               value={name}
               onChange={(e) => setName(e.target.value)}
               required
-              placeholder="e.g. Abandoned farmhouse"
+              placeholder="e.g. Old shop on Main Street"
               style={{
                 width: '100%',
                 padding: 10,
                 borderRadius: 6,
                 border: '1px solid #ccc',
-                fontSize: 16
+                fontSize: 14
               }}
             />
           </div>
 
-          <div style={{ marginBottom: 15 }}>
-            <label style={{ display: 'block', marginBottom: 5, fontWeight: 'bold' }}>
-              Description
+          <div style={{ marginBottom: 14 }}>
+            <label style={{ display: 'block', fontWeight: 'bold', marginBottom: 4 }}>
+              Eircode (optional)
+            </label>
+            <input
+              type="text"
+              value={eircode}
+              onChange={(e) => setEircode(e.target.value.toUpperCase())}
+              placeholder="e.g. P25 ABC1"
+              style={{
+                width: '100%',
+                padding: 10,
+                borderRadius: 6,
+                border: '1px solid #ccc',
+                fontSize: 14,
+                textTransform: 'uppercase'
+              }}
+            />
+            <small style={{ color: '#777' }}>
+              We’ll store this so councils can see an official list later.
+            </small>
+          </div>
+
+          <div style={{ marginBottom: 14 }}>
+            <label style={{ display: 'block', fontWeight: 'bold', marginBottom: 4 }}>
+              Description (optional)
             </label>
             <textarea
               value={description}
               onChange={(e) => setDescription(e.target.value)}
-              placeholder="Add details about this site…"
               rows={3}
+              placeholder="Describe the condition or history…"
               style={{
                 width: '100%',
                 padding: 10,
                 borderRadius: 6,
                 border: '1px solid #ccc',
-                fontSize: 15,
-                fontFamily: 'inherit'
+                fontSize: 14,
+                resize: 'vertical'
               }}
             />
           </div>
 
-          <div style={{ marginBottom: 20 }}>
-            <label style={{ display: 'block', marginBottom: 5, fontWeight: 'bold' }}>
-              Photo (optional, required if signed in to use AI later)
+          <div style={{ marginBottom: 18 }}>
+            <label style={{ display: 'block', fontWeight: 'bold', marginBottom: 4 }}>
+              Photo (optional but very helpful)
             </label>
             <input
               type="file"
               accept="image/*"
-              onChange={(e) => setPhoto(e.target.files[0])}
-              style={{ fontSize: 14 }}
+              onChange={(e) => setPhoto(e.target.files?.[0] || null)}
             />
           </div>
 
-          <div style={{ display: 'flex', gap: 10 }}>
+          {error && (
+            <div style={{
+              marginBottom: 12,
+              padding: 10,
+              borderRadius: 6,
+              background: '#ffebee',
+              color: '#b71c1c',
+              fontSize: 13
+            }}>
+              {error}
+            </div>
+          )}
+
+          <div style={{ display: 'flex', gap: 10, marginTop: 10 }}>
             <button
               type="submit"
               disabled={uploading}
               style={{
                 flex: 1,
                 padding: 12,
-                backgroundColor: uploading ? '#ccc' : '#4CAF50',
-                color: 'white',
                 borderRadius: 6,
                 border: 'none',
-                fontSize: 16,
+                background: uploading ? '#9e9e9e' : '#4CAF50',
+                color: '#fff',
                 fontWeight: 'bold',
-                cursor: uploading ? 'not-allowed' : 'pointer'
+                cursor: uploading ? 'default' : 'pointer'
               }}
             >
               {uploading ? 'Saving…' : 'Save site'}
             </button>
+
             <button
               type="button"
               onClick={onClose}
               disabled={uploading}
               style={{
-                flex: 1,
                 padding: 12,
-                backgroundColor: '#f44336',
-                color: 'white',
                 borderRadius: 6,
                 border: 'none',
-                fontSize: 16,
+                background: '#eee',
+                color: '#333',
                 fontWeight: 'bold',
-                cursor: uploading ? 'not-allowed' : 'pointer'
+                cursor: uploading ? 'default' : 'pointer'
               }}
             >
               Cancel
@@ -184,4 +223,3 @@ function SiteForm({ position, userId, onClose, onSiteAdded }) {
 }
 
 export default SiteForm
-

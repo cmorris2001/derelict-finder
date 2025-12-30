@@ -1,3 +1,4 @@
+// src/Map.js
 import React, { useEffect, useState } from 'react'
 import { MapContainer, TileLayer, Marker, Popup, useMapEvents } from 'react-leaflet'
 import L from 'leaflet'
@@ -6,7 +7,8 @@ import { supabase } from './supabaseClient'
 import SiteForm from './SiteForm'
 import AIReimager from './AIReimager'
 import AdminDashboard from './AdminDashboard'
-import ProfileScreen from './ProfileScreen'   // 👈 NEW
+import ProfileScreen from './ProfileScreen'
+
 
 // fix marker icons in React-Leaflet
 delete L.Icon.Default.prototype._getIconUrl
@@ -18,10 +20,14 @@ L.Icon.Default.mergeOptions({
 
 function AddMarkerOnClick({ onMapClick }) {
   useMapEvents({
-    click(e) { onMapClick(e.latlng) }
+    click(e) {
+      onMapClick(e.latlng)
+    },
   })
   return null
 }
+
+const GOAL_SITES = 10000
 
 function Map({ user, profile, onSignInClick }) {
   const [sites, setSites] = useState([])
@@ -36,17 +42,25 @@ function Map({ user, profile, onSignInClick }) {
   const [leaderboard, setLeaderboard] = useState([])
   const [showLeaderboard, setShowLeaderboard] = useState(false)
 
-  // NEW: favourites + profile modal
-  const [favoriteSiteIds, setFavoriteSiteIds] = useState([])
-  const [showProfile, setShowProfile] = useState(false)
+  const [showWelcome, setShowWelcome] = useState(false)
+  const [showImpact, setShowImpact] = useState(false)
 
   useEffect(() => {
     loadSites()
     loadLeaderboard()
+
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition((pos) => {
         setUserLocation([pos.coords.latitude, pos.coords.longitude])
       })
+    }
+
+    // Welcome modal – first visit only
+    try {
+      const seen = window.localStorage.getItem('derelict_welcome_seen')
+      if (!seen) setShowWelcome(true)
+    } catch (e) {
+      // ignore if localStorage not available
     }
   }, [])
 
@@ -56,30 +70,6 @@ function Map({ user, profile, onSignInClick }) {
     }
   }, [user, profile])
 
-  // NEW: load favourites whenever the user changes
-  useEffect(() => {
-    if (!user) {
-      setFavoriteSiteIds([])
-      return
-    }
-
-    const loadFavorites = async () => {
-      try {
-        const { data, error } = await supabase
-          .from('favorites')
-          .select('site_id')
-          .eq('user_id', user.id)
-
-        if (error) throw error
-        setFavoriteSiteIds(data.map((f) => f.site_id))
-      } catch (err) {
-        console.error('Error loading favorites:', err)
-      }
-    }
-
-    loadFavorites()
-  }, [user])
-
   const loadSites = async () => {
     try {
       // First get all sites
@@ -87,20 +77,20 @@ function Map({ user, profile, onSignInClick }) {
         .from('derelict_sites')
         .select('*')
         .order('created_at', { ascending: false })
-      
+
       if (sitesError) throw sitesError
 
       // Then get all profiles separately
       const { data: profilesData, error: profilesError } = await supabase
         .from('profiles')
         .select('id, username, avatar_url')
-      
+
       if (profilesError) throw profilesError
 
       // Manually join the data
-      const sitesWithProfiles = sitesData.map(site => ({
+      const sitesWithProfiles = sitesData.map((site) => ({
         ...site,
-        profiles: site.user_id ? profilesData.find(p => p.id === site.user_id) : null
+        profiles: site.user_id ? profilesData.find((p) => p.id === site.user_id) : null,
       }))
 
       setSites(sitesWithProfiles || [])
@@ -114,26 +104,23 @@ function Map({ user, profile, onSignInClick }) {
 
   const loadLeaderboard = async () => {
     try {
-      // Get all approved sites with user info
       const { data: sitesData, error: sitesError } = await supabase
         .from('derelict_sites')
         .select('user_id')
         .eq('status', 'approved')
-      
+
       if (sitesError) throw sitesError
 
-      // Get all profiles
       const { data: profilesData, error: profilesError } = await supabase
         .from('profiles')
         .select('id, username')
-      
+
       if (profilesError) throw profilesError
 
-      // Count sites per user
       const counts = {}
-      sitesData.forEach(site => {
+      sitesData.forEach((site) => {
         if (site.user_id) {
-          const userProfile = profilesData.find(p => p.id === site.user_id)
+          const userProfile = profilesData.find((p) => p.id === site.user_id)
           if (userProfile) {
             const username = userProfile.username
             counts[username] = (counts[username] || 0) + 1
@@ -141,11 +128,10 @@ function Map({ user, profile, onSignInClick }) {
         }
       })
 
-      // Convert to array and sort
       const leaderboardData = Object.entries(counts)
         .map(([username, count]) => ({ username, count }))
         .sort((a, b) => b.count - a.count)
-        .slice(0, 10) // Top 10
+        .slice(0, 10)
 
       setLeaderboard(leaderboardData)
     } catch (err) {
@@ -154,7 +140,6 @@ function Map({ user, profile, onSignInClick }) {
   }
 
   const handleMapClick = (latlng) => {
-    // If not signed in, show confirmation before opening form
     if (!user) {
       if (window.confirm('You can add sites anonymously, but sign in to upload photos. Continue?')) {
         setSelectedPosition(latlng)
@@ -162,85 +147,99 @@ function Map({ user, profile, onSignInClick }) {
       }
       return
     }
-    
+
     setSelectedPosition(latlng)
     setShowForm(true)
   }
 
   const handleSiteAdded = (newSite) => {
     setSites([newSite, ...sites])
-    loadLeaderboard() // Refresh leaderboard
+    loadLeaderboard()
   }
 
   const handleSignOut = async () => {
     await supabase.auth.signOut()
   }
 
-  // NEW: toggle favourite
-  const toggleFavorite = async (siteId) => {
-    if (!user) {
-      alert('Sign in to favourite sites.')
-      return
-    }
-
-    const isFav = favoriteSiteIds.includes(siteId)
-
+  const handleDismissWelcome = () => {
+    setShowWelcome(false)
     try {
-      if (isFav) {
-        const { error } = await supabase
-          .from('favorites')
-          .delete()
-          .eq('user_id', user.id)
-          .eq('site_id', siteId)
-
-        if (error) throw error
-        setFavoriteSiteIds(favoriteSiteIds.filter((id) => id !== siteId))
-      } else {
-        const { error } = await supabase
-          .from('favorites')
-          .insert([{ user_id: user.id, site_id: siteId }])
-
-        if (error) throw error
-        setFavoriteSiteIds([...favoriteSiteIds, siteId])
-      }
-    } catch (err) {
-      console.error('Error toggling favorite:', err)
-      alert('Error updating favourite: ' + err.message)
+      window.localStorage.setItem('derelict_welcome_seen', 'true')
+    } catch (e) {
+      // ignore
     }
   }
 
-  if (loading) return (
-    <div style={{
-      display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh'
-    }}>
-      Loading map…
-    </div>
-  )
+  if (loading) {
+    return (
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          height: '100vh',
+        }}
+      >
+        Loading map…
+      </div>
+    )
+  }
 
-  const approvedCount = sites.filter(s => s.status === 'approved').length
-  const pendingCount = sites.filter(s => s.status === 'pending').length
+  const approvedCount = sites.filter((s) => s.status === 'approved').length
+  const pendingCount = sites.filter((s) => s.status === 'pending').length
+  const totalSites = sites.length
+  const goalProgress = Math.min(approvedCount / GOAL_SITES, 1)
 
   return (
     <div style={{ height: '100vh', width: '100%' }}>
       {/* Top bar */}
-      <div style={{
-        position: 'absolute',
-        top: 10,
-        left: '50%',
-        transform: 'translateX(-50%)',
-        zIndex: 1000,
-        background: 'white',
-        padding: '10px 20px',
-        borderRadius: 8,
-        boxShadow: '0 2px 10px rgba(0,0,0,0.2)',
-        display: 'flex',
-        alignItems: 'center',
-        gap: 15
-      }}>
+      <div
+        style={{
+          position: 'absolute',
+          top: 10,
+          left: '50%',
+          transform: 'translateX(-50%)',
+          zIndex: 1000,
+          background: 'white',
+          padding: '10px 20px',
+          borderRadius: 8,
+          boxShadow: '0 2px 10px rgba(0,0,0,0.2)',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 15,
+          maxWidth: '90vw',
+        }}
+      >
         <div>
           🏚️ <strong>{approvedCount}</strong> approved sites
         </div>
-        
+
+        {/* Goal mini bar */}
+        <div style={{ display: 'flex', flexDirection: 'column', minWidth: 140 }}>
+          <span style={{ fontSize: 11, color: '#666' }}>
+            🎯 Goal: {GOAL_SITES.toLocaleString()} mapped
+          </span>
+          <div
+            style={{
+              marginTop: 3,
+              width: '100%',
+              height: 6,
+              borderRadius: 999,
+              background: '#eee',
+              overflow: 'hidden',
+            }}
+          >
+            <div
+              style={{
+                width: `${goalProgress * 100}%`,
+                height: '100%',
+                background: '#4CAF50',
+                transition: 'width 0.3s ease',
+              }}
+            />
+          </div>
+        </div>
+
         {/* Leaderboard button */}
         <button
           onClick={() => setShowLeaderboard(!showLeaderboard)}
@@ -252,28 +251,35 @@ function Map({ user, profile, onSignInClick }) {
             borderRadius: 6,
             cursor: 'pointer',
             fontWeight: 'bold',
-            fontSize: 13
+            fontSize: 13,
           }}
         >
           🏆 Leaderboard
         </button>
 
+        {/* Impact button */}
+        <button
+          onClick={() => setShowImpact(true)}
+          style={{
+            background: '#673ab7',
+            color: 'white',
+            border: 'none',
+            padding: '6px 12px',
+            borderRadius: 6,
+            cursor: 'pointer',
+            fontWeight: 'bold',
+            fontSize: 13,
+          }}
+        >
+          📊 Impact
+        </button>
+
         {profile && (
-          <button
-            onClick={() => setShowProfile(true)}
-            style={{
-              borderLeft: '1px solid #ddd',
-              paddingLeft: 15,
-              background: 'transparent',
-              border: 'none',
-              cursor: 'pointer',
-              fontSize: 14
-            }}
-          >
+          <div style={{ borderLeft: '1px solid #ddd', paddingLeft: 15 }}>
             👤 <strong>@{profile.username}</strong>
-          </button>
+          </div>
         )}
-        
+
         {isAdmin && (
           <button
             onClick={() => setShowAdminDashboard(true)}
@@ -285,7 +291,7 @@ function Map({ user, profile, onSignInClick }) {
               borderRadius: 6,
               cursor: 'pointer',
               fontWeight: 'bold',
-              fontSize: 13
+              fontSize: 13,
             }}
           >
             🛡️ Admin {pendingCount > 0 && `(${pendingCount})`}
@@ -309,7 +315,7 @@ function Map({ user, profile, onSignInClick }) {
             borderRadius: 6,
             cursor: 'pointer',
             fontWeight: 'bold',
-            fontSize: 14
+            fontSize: 14,
           }}
         >
           Sign Out
@@ -329,7 +335,7 @@ function Map({ user, profile, onSignInClick }) {
             borderRadius: 6,
             cursor: 'pointer',
             fontWeight: 'bold',
-            fontSize: 14
+            fontSize: 14,
           }}
         >
           Sign In
@@ -339,47 +345,68 @@ function Map({ user, profile, onSignInClick }) {
       <MapContainer center={userLocation} zoom={13} style={{ height: '100%', width: '100%' }}>
         <TileLayer
           url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-          attribution='&copy; OpenStreetMap contributors'
+          attribution="&copy; OpenStreetMap contributors"
         />
         <AddMarkerOnClick onMapClick={handleMapClick} />
 
         {sites.map((site) => (
           <Marker key={site.id} position={[site.latitude, site.longitude]}>
-            <Popup maxWidth={300}>
+            <Popup maxWidth={320}>
               <div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start' }}>
+                <div
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'start',
+                  }}
+                >
                   <strong style={{ fontSize: 16 }}>{site.name}</strong>
-                  
-                  {/* Show pending badge if it's user's own pending site */}
+
                   {site.status === 'pending' && site.user_id === user?.id && (
-                    <span style={{
-                      background: '#ff9800',
-                      color: 'white',
-                      padding: '2px 8px',
-                      borderRadius: 4,
-                      fontSize: 11,
-                      fontWeight: 'bold',
-                      marginLeft: 8
-                    }}>
+                    <span
+                      style={{
+                        background: '#ff9800',
+                        color: 'white',
+                        padding: '2px 8px',
+                        borderRadius: 4,
+                        fontSize: 11,
+                        fontWeight: 'bold',
+                        marginLeft: 8,
+                      }}
+                    >
                       PENDING
                     </span>
                   )}
                 </div>
-                
-                {/* Show who discovered it */}
-                {site.profiles && (
-                  <div style={{ 
-                    fontSize: 12, 
-                    color: '#666', 
-                    marginTop: 5,
-                    marginBottom: 10 
-                  }}>
+
+                {site.profiles ? (
+                  <div
+                    style={{
+                      fontSize: 12,
+                      color: '#666',
+                      marginTop: 5,
+                      marginBottom: 6,
+                    }}
+                  >
                     Discovered by <strong>@{site.profiles.username}</strong>
                   </div>
-                )}
-                {!site.profiles && (
-                  <div style={{ fontSize: 12, color: '#999', marginTop: 5, marginBottom: 10 }}>
+                ) : (
+                  <div
+                    style={{
+                      fontSize: 12,
+                      color: '#999',
+                      marginTop: 5,
+                      marginBottom: 6,
+                    }}
+                  >
                     Discovered by <em>anonymous</em>
+                  </div>
+                )}
+
+                {/* Eircode display */}
+                {site.eircode && (
+                  <div style={{ fontSize: 12, color: '#444', marginBottom: 6 }}>
+                    📮 Eircode: <strong>{site.eircode}</strong>
                   </div>
                 )}
 
@@ -387,26 +414,29 @@ function Map({ user, profile, onSignInClick }) {
                   <img
                     src={site.photo_url}
                     alt={site.name}
-                    style={{ 
-                      width: '100%', 
-                      height: 150, 
-                      objectFit: 'cover', 
-                      marginTop: 10, 
-                      borderRadius: 6 
+                    style={{
+                      width: '100%',
+                      height: 150,
+                      objectFit: 'cover',
+                      marginTop: 6,
+                      borderRadius: 6,
                     }}
                   />
                 )}
-                
+
                 {site.description && (
-                  <p style={{ marginTop: 10, fontSize: 14 }}>{site.description}</p>
+                  <p style={{ marginTop: 8, fontSize: 14 }}>{site.description}</p>
                 )}
-                
+
                 <small style={{ color: '#666', display: 'block', marginTop: 5 }}>
                   {new Date(site.created_at).toLocaleDateString()}
                 </small>
-                
+
                 <button
-                  onClick={() => { setSelectedSite(site); setShowAIModal(true) }}
+                  onClick={() => {
+                    setSelectedSite(site)
+                    setShowAIModal(true)
+                  }}
                   style={{
                     marginTop: 10,
                     width: '100%',
@@ -417,31 +447,11 @@ function Map({ user, profile, onSignInClick }) {
                     borderRadius: 6,
                     fontSize: 14,
                     fontWeight: 'bold',
-                    cursor: 'pointer'
+                    cursor: 'pointer',
                   }}
                 >
                   ✨ Reimagine with AI
                 </button>
-
-                {user && (
-                  <button
-                    onClick={() => toggleFavorite(site.id)}
-                    style={{
-                      marginTop: 8,
-                      width: '100%',
-                      padding: 6,
-                      background: favoriteSiteIds.includes(site.id) ? '#e91e63' : '#ffffff',
-                      color: favoriteSiteIds.includes(site.id) ? '#fff' : '#e91e63',
-                      border: '1px solid #e91e63',
-                      borderRadius: 6,
-                      fontSize: 13,
-                      fontWeight: 'bold',
-                      cursor: 'pointer'
-                    }}
-                  >
-                    {favoriteSiteIds.includes(site.id) ? '♥ Favourited' : '♡ Add to favourites'}
-                  </button>
-                )}
               </div>
             </Popup>
           </Marker>
@@ -449,11 +459,11 @@ function Map({ user, profile, onSignInClick }) {
       </MapContainer>
 
       {showForm && selectedPosition && (
-        <SiteForm 
-          position={selectedPosition} 
+        <SiteForm
+          position={selectedPosition}
           userId={user?.id || null}
-          onClose={() => setShowForm(false)} 
-          onSiteAdded={handleSiteAdded} 
+          onClose={() => setShowForm(false)}
+          onSiteAdded={handleSiteAdded}
         />
       )}
 
@@ -462,31 +472,40 @@ function Map({ user, profile, onSignInClick }) {
       )}
 
       {showAdminDashboard && isAdmin && (
-        <AdminDashboard 
+        <AdminDashboard
           onClose={() => {
             setShowAdminDashboard(false)
             loadSites()
             loadLeaderboard()
-          }} 
+          }}
         />
       )}
 
-      {/* Leaderboard Modal */}
+      {/* Leaderboard Modal (unchanged) */}
       {showLeaderboard && (
-        <div style={{
-          position: 'fixed',
-          top: 80,
-          right: 20,
-          zIndex: 1000,
-          background: 'white',
-          padding: 20,
-          borderRadius: 12,
-          boxShadow: '0 4px 20px rgba(0,0,0,0.3)',
-          width: 300,
-          maxHeight: '70vh',
-          overflow: 'auto'
-        }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 15 }}>
+        <div
+          style={{
+            position: 'fixed',
+            top: 80,
+            right: 20,
+            zIndex: 1000,
+            background: 'white',
+            padding: 20,
+            borderRadius: 12,
+            boxShadow: '0 4px 20px rgba(0,0,0,0.3)',
+            width: 300,
+            maxHeight: '70vh',
+            overflow: 'auto',
+          }}
+        >
+          <div
+            style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              marginBottom: 15,
+            }}
+          >
             <h3 style={{ margin: 0 }}>🏆 Top Discoverers</h3>
             <button
               onClick={() => setShowLeaderboard(false)}
@@ -495,7 +514,7 @@ function Map({ user, profile, onSignInClick }) {
                 border: 'none',
                 fontSize: 24,
                 cursor: 'pointer',
-                color: '#999'
+                color: '#999',
               }}
             >
               ×
@@ -516,9 +535,16 @@ function Map({ user, profile, onSignInClick }) {
                     justifyContent: 'space-between',
                     alignItems: 'center',
                     padding: 12,
-                    background: index === 0 ? '#fff9c4' : index === 1 ? '#f5f5f5' : index === 2 ? '#ffe0b2' : '#fafafa',
+                    background:
+                      index === 0
+                        ? '#fff9c4'
+                        : index === 1
+                        ? '#f5f5f5'
+                        : index === 2
+                        ? '#ffe0b2'
+                        : '#fafafa',
                     borderRadius: 8,
-                    border: index < 3 ? '2px solid #ffc107' : '1px solid #eee'
+                    border: index < 3 ? '2px solid #ffc107' : '1px solid #eee',
                   }}
                 >
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -529,14 +555,16 @@ function Map({ user, profile, onSignInClick }) {
                       @{entry.username}
                     </span>
                   </div>
-                  <span style={{
-                    background: '#4CAF50',
-                    color: 'white',
-                    padding: '4px 10px',
-                    borderRadius: 12,
-                    fontSize: 13,
-                    fontWeight: 'bold'
-                  }}>
+                  <span
+                    style={{
+                      background: '#4CAF50',
+                      color: 'white',
+                      padding: '4px 10px',
+                      borderRadius: 12,
+                      fontSize: 13,
+                      fontWeight: 'bold',
+                    }}
+                  >
                     {entry.count} {entry.count === 1 ? 'site' : 'sites'}
                   </span>
                 </div>
@@ -545,38 +573,237 @@ function Map({ user, profile, onSignInClick }) {
           )}
 
           {profile && (
-            <div style={{
-              marginTop: 20,
-              padding: 15,
-              background: '#e3f2fd',
-              borderRadius: 8,
-              textAlign: 'center'
-            }}>
+            <div
+              style={{
+                marginTop: 20,
+                padding: 15,
+                background: '#e3f2fd',
+                borderRadius: 8,
+                textAlign: 'center',
+              }}
+            >
               <div style={{ fontSize: 13, color: '#666', marginBottom: 5 }}>Your discoveries</div>
               <div style={{ fontSize: 24, fontWeight: 'bold', color: '#2196F3' }}>
-                {sites.filter(s => s.user_id === user?.id && s.status === 'approved').length}
+                {sites.filter((s) => s.user_id === user?.id && s.status === 'approved').length}
               </div>
               <div style={{ fontSize: 12, color: '#999', marginTop: 5 }}>
-                ({sites.filter(s => s.user_id === user?.id && s.status === 'pending').length} pending approval)
+                ({sites.filter((s) => s.user_id === user?.id && s.status === 'pending').length} pending
+                approval)
               </div>
             </div>
           )}
         </div>
       )}
 
-      {/* Profile modal */}
-      {showProfile && user && profile && (
-        <ProfileScreen
-          user={user}
-          profile={profile}
-          sites={sites}
-          favoriteSiteIds={favoriteSiteIds}
-          leaderboard={leaderboard}
-          onClose={() => setShowProfile(false)}
-        />
+      {/* Welcome modal */}
+      {showWelcome && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0,0,0,0.6)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 2000,
+          }}
+        >
+          <div
+            style={{
+              background: 'white',
+              borderRadius: 16,
+              padding: 24,
+              maxWidth: 600,
+              width: '90%',
+              boxShadow: '0 6px 30px rgba(0,0,0,0.35)',
+            }}
+          >
+            <h2 style={{ marginTop: 0, marginBottom: 10 }}>
+              ✨ Welcome to <span style={{ color: '#4CAF50' }}>Derelict Connect</span>
+            </h2>
+            <p style={{ marginTop: 0, color: '#555' }}>
+              We’re building a community map of derelict and long–term vacant sites in Ireland.
+              Every pin helps show the true scale of under–used buildings and land.
+            </p>
+
+            <h3 style={{ marginTop: 18, marginBottom: 6 }}>What counts as a derelict site?</h3>
+            <ul style={{ marginTop: 0, color: '#555', paddingLeft: 20, fontSize: 14 }}>
+              <li>Clearly abandoned or not lived in for a long time</li>
+              <li>In poor or unsafe condition (broken windows, overgrown, boarded up, etc.)</li>
+              <li>Not obviously under active renovation</li>
+            </ul>
+
+            <p style={{ color: '#666', fontSize: 14 }}>
+              Please avoid adding homes that are clearly lived in or in normal use. When in doubt,
+              add a note in the description.
+            </p>
+
+            <h3 style={{ marginTop: 18, marginBottom: 6 }}>How it works</h3>
+            <ul style={{ marginTop: 0, color: '#555', paddingLeft: 20, fontSize: 14 }}>
+              <li>Click anywhere on the map to add a site.</li>
+              <li>Add a photo, optional Eircode, and a short description.</li>
+              <li>
+                Our AI reimagines what the site could become – housing, community spaces, or
+                something bold and new.
+              </li>
+              <li>Sites are reviewed before being marked as “approved”.</li>
+            </ul>
+
+            <div style={{ marginTop: 20, display: 'flex', justifyContent: 'flex-end' }}>
+              <button
+                onClick={handleDismissWelcome}
+                style={{
+                  padding: '10px 20px',
+                  borderRadius: 8,
+                  border: 'none',
+                  background: '#4CAF50',
+                  color: 'white',
+                  fontWeight: 'bold',
+                  cursor: 'pointer',
+                  fontSize: 14,
+                }}
+              >
+                Start mapping
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Impact / goal modal */}
+      {showImpact && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0,0,0,0.6)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 2000,
+          }}
+        >
+          <div
+            style={{
+              background: 'white',
+              borderRadius: 16,
+              padding: 24,
+              maxWidth: 520,
+              width: '90%',
+              boxShadow: '0 6px 30px rgba(0,0,0,0.35)',
+            }}
+          >
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                marginBottom: 10,
+              }}
+            >
+              <h2 style={{ margin: 0 }}>📊 Project impact</h2>
+              <button
+                onClick={() => setShowImpact(false)}
+                style={{
+                  background: 'transparent',
+                  border: 'none',
+                  fontSize: 24,
+                  cursor: 'pointer',
+                  color: '#999',
+                  lineHeight: 1,
+                }}
+              >
+                ×
+              </button>
+            </div>
+
+            <p style={{ color: '#555', fontSize: 14 }}>
+              Derelict Connect is about making the hidden problem of dereliction visible – and
+              turning it into a pipeline of opportunities for homes and community spaces.
+            </p>
+
+            <div
+              style={{
+                marginTop: 16,
+                display: 'grid',
+                gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+                gap: 12,
+              }}
+            >
+              <div
+                style={{
+                  padding: 12,
+                  borderRadius: 10,
+                  background: '#e8f5e9',
+                  textAlign: 'center',
+                }}
+              >
+                <div style={{ fontSize: 12, color: '#388e3c' }}>Approved sites</div>
+                <div style={{ fontSize: 26, fontWeight: 'bold', color: '#1b5e20' }}>
+                  {approvedCount}
+                </div>
+              </div>
+
+              <div
+                style={{
+                  padding: 12,
+                  borderRadius: 10,
+                  background: '#e3f2fd',
+                  textAlign: 'center',
+                }}
+              >
+                <div style={{ fontSize: 12, color: '#1976d2' }}>Total mapped</div>
+                <div style={{ fontSize: 26, fontWeight: 'bold', color: '#0d47a1' }}>
+                  {totalSites}
+                </div>
+              </div>
+
+              <div
+                style={{
+                  padding: 12,
+                  borderRadius: 10,
+                  background: '#fff8e1',
+                  textAlign: 'center',
+                }}
+              >
+                <div style={{ fontSize: 12, color: '#f9a825' }}>Pending review</div>
+                <div style={{ fontSize: 26, fontWeight: 'bold', color: '#f57f17' }}>
+                  {pendingCount}
+                </div>
+              </div>
+
+              <div
+                style={{
+                  padding: 12,
+                  borderRadius: 10,
+                  background: '#f3e5f5',
+                  textAlign: 'center',
+                }}
+              >
+                <div style={{ fontSize: 12, color: '#8e24aa' }}>Goal progress</div>
+                <div style={{ fontSize: 18, fontWeight: 'bold', color: '#6a1b9a' }}>
+                  {(goalProgress * 100).toFixed(1)}%
+                </div>
+                <div style={{ fontSize: 11, color: '#8e24aa' }}>
+                  {approvedCount.toLocaleString()} / {GOAL_SITES.toLocaleString()}
+                </div>
+              </div>
+            </div>
+
+            <p style={{ marginTop: 18, color: '#666', fontSize: 13 }}>
+              For your LEO pitch you can literally say:
+              <br />
+              <em>
+                “Imagine this scaled nationally – a live map of X,000 derelict sites, each with an
+                Eircode and a concept design for reuse.”
+              </em>
+            </p>
+          </div>
+        </div>
       )}
     </div>
   )
 }
 
 export default Map
+
