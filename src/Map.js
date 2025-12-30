@@ -790,14 +790,7 @@ function Map({ user, profile, onSignInClick }) {
               </div>
             </div>
 
-            <p style={{ marginTop: 18, color: '#666', fontSize: 13 }}>
-              For your LEO pitch you can literally say:
-              <br />
-              <em>
-                “Imagine this scaled nationally – a live map of X,000 derelict sites, each with an
-                Eircode and a concept design for reuse.”
-              </em>
-            </p>
+            
           </div>
         </div>
       )}
