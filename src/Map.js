@@ -179,7 +179,7 @@ function Map({ user, profile, onSignInClick }) {
       return
     }
     loadFavorites()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    
   }, [user])
 
   const loadFavorites = async () => {

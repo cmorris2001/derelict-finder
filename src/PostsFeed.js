@@ -14,13 +14,13 @@ function PostsFeed({ user, onClose }) {
 
   useEffect(() => {
     loadFeed()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    
   }, [])
 
   useEffect(() => {
     if (postIds.length) loadReactions(postIds)
     else setReactions([])
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    
   }, [postIds.join(',')])
 
   const loadFeed = async () => {
