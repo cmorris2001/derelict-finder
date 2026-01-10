@@ -1,6 +1,13 @@
 // src/Map.js
-import React, { useEffect, useState } from 'react'
-import { MapContainer, TileLayer, Marker, Popup, useMapEvents } from 'react-leaflet'
+import React, { useEffect, useState, useRef } from 'react'
+import {
+  MapContainer,
+  TileLayer,
+  Marker,
+  Popup,
+  useMapEvents,
+  useMap,
+} from 'react-leaflet'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
 import { supabase } from './supabaseClient'
@@ -8,7 +15,6 @@ import SiteForm from './SiteForm'
 import AIReimager from './AIReimager'
 import AdminDashboard from './AdminDashboard'
 import ProfileScreen from './ProfileScreen'
-
 
 // fix marker icons in React-Leaflet
 delete L.Icon.Default.prototype._getIconUrl
@@ -26,6 +32,32 @@ function AddMarkerOnClick({ onMapClick }) {
   })
   return null
 }
+
+// NEW: component that recenters the map reliably when "recenterTick" changes
+function RecenterMap({ target, recenterTick }) {
+  const map = useMap()
+
+  useEffect(() => {
+    if (!target) return
+    map.setView([target.lat, target.lng], Math.max(map.getZoom(), 15), { animate: true })
+  }, [recenterTick]) // intentionally only reacts to tick
+
+  return null
+}
+
+// blue dot icon (no image needed)
+const userDotIcon = L.divIcon({
+  className: '',
+  html: `
+    <div style="
+      width:14px;height:14px;border-radius:50%;
+      background:#1a73e8;border:2px solid white;
+      box-shadow:0 0 0 3px rgba(26,115,232,.25);
+    "></div>
+  `,
+  iconSize: [14, 14],
+  iconAnchor: [7, 7],
+})
 
 const GOAL_SITES = 10000
 
@@ -45,14 +77,75 @@ function Map({ user, profile, onSignInClick }) {
   const [showWelcome, setShowWelcome] = useState(false)
   const [showImpact, setShowImpact] = useState(false)
 
+  // NEW: live user location (dot only)
+  const [liveUserLocation, setLiveUserLocation] = useState(null) // { lat, lng }
+  const [locationError, setLocationError] = useState('')
+  const watchIdRef = useRef(null)
+
+  // NEW: tick used to trigger recenter inside the map
+  const [recenterTick, setRecenterTick] = useState(0)
+
+  // NEW: accuracy filtering
+  const lastGoodAccuracyRef = useRef(null)
+  const MAX_ACCEPTABLE_ACCURACY_METERS = 120 // tweak: 50 is strict, 150 is lenient
+
   useEffect(() => {
     loadSites()
     loadLeaderboard()
 
+    // One-time location (just to center initially)
     if (navigator.geolocation) {
-      navigator.geolocation.getCurrentPosition((pos) => {
-        setUserLocation([pos.coords.latitude, pos.coords.longitude])
-      })
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          setUserLocation([pos.coords.latitude, pos.coords.longitude])
+        },
+        () => {
+          // ignore, keep default
+        },
+        { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+      )
+    }
+
+    // Start live tracking (blue dot)
+    if ('geolocation' in navigator) {
+      watchIdRef.current = navigator.geolocation.watchPosition(
+        (pos) => {
+          const lat = pos.coords.latitude
+          const lng = pos.coords.longitude
+          const accuracy = pos.coords.accuracy ?? null
+
+          // If we have an accuracy reading and it's really poor, ignore it
+          if (typeof accuracy === 'number') {
+            if (accuracy > MAX_ACCEPTABLE_ACCURACY_METERS) {
+              // keep the dot where it was (prevents jumps to a worse estimate)
+              setLocationError(`Location is approximate (~${Math.round(accuracy)}m).`)
+              return
+            }
+
+            // track best accuracy seen
+            if (
+              lastGoodAccuracyRef.current === null ||
+              accuracy < lastGoodAccuracyRef.current
+            ) {
+              lastGoodAccuracyRef.current = accuracy
+            }
+          }
+
+          setLiveUserLocation({ lat, lng })
+          setUserLocation([lat, lng])
+          setLocationError('')
+        },
+        (err) => {
+          setLocationError(err?.message || 'Location permission denied.')
+        },
+        {
+          enableHighAccuracy: true,
+          maximumAge: 0, // IMPORTANT: avoid cached WiFi location
+          timeout: 20000,
+        }
+      )
+    } else {
+      setLocationError('Geolocation is not supported by this browser.')
     }
 
     // Welcome modal – first visit only
@@ -60,7 +153,13 @@ function Map({ user, profile, onSignInClick }) {
       const seen = window.localStorage.getItem('derelict_welcome_seen')
       if (!seen) setShowWelcome(true)
     } catch (e) {
-      // ignore if localStorage not available
+      // ignore
+    }
+
+    return () => {
+      if (watchIdRef.current !== null && navigator.geolocation) {
+        navigator.geolocation.clearWatch(watchIdRef.current)
+      }
     }
   }, [])
 
@@ -72,7 +171,6 @@ function Map({ user, profile, onSignInClick }) {
 
   const loadSites = async () => {
     try {
-      // First get all sites
       const { data: sitesData, error: sitesError } = await supabase
         .from('derelict_sites')
         .select('*')
@@ -80,14 +178,12 @@ function Map({ user, profile, onSignInClick }) {
 
       if (sitesError) throw sitesError
 
-      // Then get all profiles separately
       const { data: profilesData, error: profilesError } = await supabase
         .from('profiles')
         .select('id, username, avatar_url')
 
       if (profilesError) throw profilesError
 
-      // Manually join the data
       const sitesWithProfiles = sitesData.map((site) => ({
         ...site,
         profiles: site.user_id ? profilesData.find((p) => p.id === site.user_id) : null,
@@ -170,16 +266,41 @@ function Map({ user, profile, onSignInClick }) {
     }
   }
 
+  // NEW: force a fresh high-accuracy reading + recenter
+  const recenterToUser = () => {
+    if (!navigator.geolocation) return
+
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const lat = pos.coords.latitude
+        const lng = pos.coords.longitude
+        const accuracy = pos.coords.accuracy ?? null
+
+        // If we got a better reading, accept it
+        if (typeof accuracy === 'number') {
+          if (accuracy > MAX_ACCEPTABLE_ACCURACY_METERS) {
+            setLocationError(`Location still approximate (~${Math.round(accuracy)}m). Try moving outside / turning on GPS.`)
+          } else {
+            setLocationError('')
+          }
+        }
+
+        setLiveUserLocation({ lat, lng })
+        setUserLocation([lat, lng])
+
+        // trigger the map recenter inside MapContainer
+        setRecenterTick((t) => t + 1)
+      },
+      (err) => {
+        setLocationError(err?.message || 'Could not fetch your location.')
+      },
+      { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 }
+    )
+  }
+
   if (loading) {
     return (
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          height: '100vh',
-        }}
-      >
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh' }}>
         Loading map…
       </div>
     )
@@ -219,24 +340,8 @@ function Map({ user, profile, onSignInClick }) {
           <span style={{ fontSize: 11, color: '#666' }}>
             🎯 Goal: {GOAL_SITES.toLocaleString()} mapped
           </span>
-          <div
-            style={{
-              marginTop: 3,
-              width: '100%',
-              height: 6,
-              borderRadius: 999,
-              background: '#eee',
-              overflow: 'hidden',
-            }}
-          >
-            <div
-              style={{
-                width: `${goalProgress * 100}%`,
-                height: '100%',
-                background: '#4CAF50',
-                transition: 'width 0.3s ease',
-              }}
-            />
+          <div style={{ marginTop: 3, width: '100%', height: 6, borderRadius: 999, background: '#eee', overflow: 'hidden' }}>
+            <div style={{ width: `${goalProgress * 100}%`, height: '100%', background: '#4CAF50', transition: 'width 0.3s ease' }} />
           </div>
         </div>
 
@@ -272,6 +377,24 @@ function Map({ user, profile, onSignInClick }) {
           }}
         >
           📊 Impact
+        </button>
+
+        {/* My Location button */}
+        <button
+          onClick={recenterToUser}
+          title={locationError ? locationError : 'Recenter to your location'}
+          style={{
+            background: '#1a73e8',
+            color: 'white',
+            border: 'none',
+            padding: '6px 12px',
+            borderRadius: 6,
+            cursor: 'pointer',
+            fontWeight: 'bold',
+            fontSize: 13,
+          }}
+        >
+          📍 My Location
         </button>
 
         {profile && (
@@ -347,19 +470,24 @@ function Map({ user, profile, onSignInClick }) {
           url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
           attribution="&copy; OpenStreetMap contributors"
         />
+
         <AddMarkerOnClick onMapClick={handleMapClick} />
+
+        {/* Recenter helper */}
+        <RecenterMap target={liveUserLocation} recenterTick={recenterTick} />
+
+        {/* Live user marker (dot only, no circle) */}
+        {liveUserLocation && (
+          <Marker position={[liveUserLocation.lat, liveUserLocation.lng]} icon={userDotIcon}>
+            <Popup>You are here</Popup>
+          </Marker>
+        )}
 
         {sites.map((site) => (
           <Marker key={site.id} position={[site.latitude, site.longitude]}>
             <Popup maxWidth={320}>
               <div>
-                <div
-                  style={{
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    alignItems: 'start',
-                  }}
-                >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start' }}>
                   <strong style={{ fontSize: 16 }}>{site.name}</strong>
 
                   {site.status === 'pending' && site.user_id === user?.id && (
@@ -380,30 +508,15 @@ function Map({ user, profile, onSignInClick }) {
                 </div>
 
                 {site.profiles ? (
-                  <div
-                    style={{
-                      fontSize: 12,
-                      color: '#666',
-                      marginTop: 5,
-                      marginBottom: 6,
-                    }}
-                  >
+                  <div style={{ fontSize: 12, color: '#666', marginTop: 5, marginBottom: 6 }}>
                     Discovered by <strong>@{site.profiles.username}</strong>
                   </div>
                 ) : (
-                  <div
-                    style={{
-                      fontSize: 12,
-                      color: '#999',
-                      marginTop: 5,
-                      marginBottom: 6,
-                    }}
-                  >
+                  <div style={{ fontSize: 12, color: '#999', marginTop: 5, marginBottom: 6 }}>
                     Discovered by <em>anonymous</em>
                   </div>
                 )}
 
-                {/* Eircode display */}
                 {site.eircode && (
                   <div style={{ fontSize: 12, color: '#444', marginBottom: 6 }}>
                     📮 Eircode: <strong>{site.eircode}</strong>
@@ -424,9 +537,7 @@ function Map({ user, profile, onSignInClick }) {
                   />
                 )}
 
-                {site.description && (
-                  <p style={{ marginTop: 8, fontSize: 14 }}>{site.description}</p>
-                )}
+                {site.description && <p style={{ marginTop: 8, fontSize: 14 }}>{site.description}</p>}
 
                 <small style={{ color: '#666', display: 'block', marginTop: 5 }}>
                   {new Date(site.created_at).toLocaleDateString()}
@@ -498,33 +609,18 @@ function Map({ user, profile, onSignInClick }) {
             overflow: 'auto',
           }}
         >
-          <div
-            style={{
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-              marginBottom: 15,
-            }}
-          >
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 15 }}>
             <h3 style={{ margin: 0 }}>🏆 Top Discoverers</h3>
             <button
               onClick={() => setShowLeaderboard(false)}
-              style={{
-                background: 'transparent',
-                border: 'none',
-                fontSize: 24,
-                cursor: 'pointer',
-                color: '#999',
-              }}
+              style={{ background: 'transparent', border: 'none', fontSize: 24, cursor: 'pointer', color: '#999' }}
             >
               ×
             </button>
           </div>
 
           {leaderboard.length === 0 ? (
-            <p style={{ textAlign: 'center', color: '#666', padding: 20 }}>
-              No approved sites yet
-            </p>
+            <p style={{ textAlign: 'center', color: '#666', padding: 20 }}>No approved sites yet</p>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
               {leaderboard.map((entry, index) => (
@@ -536,13 +632,7 @@ function Map({ user, profile, onSignInClick }) {
                     alignItems: 'center',
                     padding: 12,
                     background:
-                      index === 0
-                        ? '#fff9c4'
-                        : index === 1
-                        ? '#f5f5f5'
-                        : index === 2
-                        ? '#ffe0b2'
-                        : '#fafafa',
+                      index === 0 ? '#fff9c4' : index === 1 ? '#f5f5f5' : index === 2 ? '#ffe0b2' : '#fafafa',
                     borderRadius: 8,
                     border: index < 3 ? '2px solid #ffc107' : '1px solid #eee',
                   }}
@@ -551,9 +641,7 @@ function Map({ user, profile, onSignInClick }) {
                     <span style={{ fontSize: 20, fontWeight: 'bold' }}>
                       {index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : `${index + 1}.`}
                     </span>
-                    <span style={{ fontWeight: index < 3 ? 'bold' : 'normal' }}>
-                      @{entry.username}
-                    </span>
+                    <span style={{ fontWeight: index < 3 ? 'bold' : 'normal' }}>@{entry.username}</span>
                   </div>
                   <span
                     style={{
@@ -573,22 +661,13 @@ function Map({ user, profile, onSignInClick }) {
           )}
 
           {profile && (
-            <div
-              style={{
-                marginTop: 20,
-                padding: 15,
-                background: '#e3f2fd',
-                borderRadius: 8,
-                textAlign: 'center',
-              }}
-            >
+            <div style={{ marginTop: 20, padding: 15, background: '#e3f2fd', borderRadius: 8, textAlign: 'center' }}>
               <div style={{ fontSize: 13, color: '#666', marginBottom: 5 }}>Your discoveries</div>
               <div style={{ fontSize: 24, fontWeight: 'bold', color: '#2196F3' }}>
                 {sites.filter((s) => s.user_id === user?.id && s.status === 'approved').length}
               </div>
               <div style={{ fontSize: 12, color: '#999', marginTop: 5 }}>
-                ({sites.filter((s) => s.user_id === user?.id && s.status === 'pending').length} pending
-                approval)
+                ({sites.filter((s) => s.user_id === user?.id && s.status === 'pending').length} pending approval)
               </div>
             </div>
           )}
@@ -634,18 +713,14 @@ function Map({ user, profile, onSignInClick }) {
             </ul>
 
             <p style={{ color: '#666', fontSize: 14 }}>
-              Please avoid adding homes that are clearly lived in or in normal use. When in doubt,
-              add a note in the description.
+              Please avoid adding homes that are clearly lived in or in normal use. When in doubt, add a note in the description.
             </p>
 
             <h3 style={{ marginTop: 18, marginBottom: 6 }}>How it works</h3>
             <ul style={{ marginTop: 0, color: '#555', paddingLeft: 20, fontSize: 14 }}>
               <li>Click anywhere on the map to add a site.</li>
               <li>Add a photo, optional Eircode, and a short description.</li>
-              <li>
-                Our AI reimagines what the site could become – housing, community spaces, or
-                something bold and new.
-              </li>
+              <li>Our AI reimagines what the site could become – housing, community spaces, or something bold and new.</li>
               <li>Sites are reviewed before being marked as “approved”.</li>
             </ul>
 
@@ -670,7 +745,7 @@ function Map({ user, profile, onSignInClick }) {
         </div>
       )}
 
-      {/* Impact / goal modal */}
+      {/* Impact modal (unchanged, trimmed for brevity in this snippet) */}
       {showImpact && (
         <div
           style={{
@@ -693,104 +768,44 @@ function Map({ user, profile, onSignInClick }) {
               boxShadow: '0 6px 30px rgba(0,0,0,0.35)',
             }}
           >
-            <div
-              style={{
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                marginBottom: 10,
-              }}
-            >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
               <h2 style={{ margin: 0 }}>📊 Project impact</h2>
               <button
                 onClick={() => setShowImpact(false)}
-                style={{
-                  background: 'transparent',
-                  border: 'none',
-                  fontSize: 24,
-                  cursor: 'pointer',
-                  color: '#999',
-                  lineHeight: 1,
-                }}
+                style={{ background: 'transparent', border: 'none', fontSize: 24, cursor: 'pointer', color: '#999', lineHeight: 1 }}
               >
                 ×
               </button>
             </div>
 
             <p style={{ color: '#555', fontSize: 14 }}>
-              Derelict Connect is about making the hidden problem of dereliction visible – and
-              turning it into a pipeline of opportunities for homes and community spaces.
+              Derelict Connect is about making the hidden problem of dereliction visible – and turning it into a pipeline of opportunities for homes and community spaces.
             </p>
 
-            <div
-              style={{
-                marginTop: 16,
-                display: 'grid',
-                gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
-                gap: 12,
-              }}
-            >
-              <div
-                style={{
-                  padding: 12,
-                  borderRadius: 10,
-                  background: '#e8f5e9',
-                  textAlign: 'center',
-                }}
-              >
+            <div style={{ marginTop: 16, display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 12 }}>
+              <div style={{ padding: 12, borderRadius: 10, background: '#e8f5e9', textAlign: 'center' }}>
                 <div style={{ fontSize: 12, color: '#388e3c' }}>Approved sites</div>
-                <div style={{ fontSize: 26, fontWeight: 'bold', color: '#1b5e20' }}>
-                  {approvedCount}
-                </div>
+                <div style={{ fontSize: 26, fontWeight: 'bold', color: '#1b5e20' }}>{approvedCount}</div>
               </div>
 
-              <div
-                style={{
-                  padding: 12,
-                  borderRadius: 10,
-                  background: '#e3f2fd',
-                  textAlign: 'center',
-                }}
-              >
+              <div style={{ padding: 12, borderRadius: 10, background: '#e3f2fd', textAlign: 'center' }}>
                 <div style={{ fontSize: 12, color: '#1976d2' }}>Total mapped</div>
-                <div style={{ fontSize: 26, fontWeight: 'bold', color: '#0d47a1' }}>
-                  {totalSites}
-                </div>
+                <div style={{ fontSize: 26, fontWeight: 'bold', color: '#0d47a1' }}>{totalSites}</div>
               </div>
 
-              <div
-                style={{
-                  padding: 12,
-                  borderRadius: 10,
-                  background: '#fff8e1',
-                  textAlign: 'center',
-                }}
-              >
+              <div style={{ padding: 12, borderRadius: 10, background: '#fff8e1', textAlign: 'center' }}>
                 <div style={{ fontSize: 12, color: '#f9a825' }}>Pending review</div>
-                <div style={{ fontSize: 26, fontWeight: 'bold', color: '#f57f17' }}>
-                  {pendingCount}
-                </div>
+                <div style={{ fontSize: 26, fontWeight: 'bold', color: '#f57f17' }}>{pendingCount}</div>
               </div>
 
-              <div
-                style={{
-                  padding: 12,
-                  borderRadius: 10,
-                  background: '#f3e5f5',
-                  textAlign: 'center',
-                }}
-              >
+              <div style={{ padding: 12, borderRadius: 10, background: '#f3e5f5', textAlign: 'center' }}>
                 <div style={{ fontSize: 12, color: '#8e24aa' }}>Goal progress</div>
-                <div style={{ fontSize: 18, fontWeight: 'bold', color: '#6a1b9a' }}>
-                  {(goalProgress * 100).toFixed(1)}%
-                </div>
+                <div style={{ fontSize: 18, fontWeight: 'bold', color: '#6a1b9a' }}>{(goalProgress * 100).toFixed(1)}%</div>
                 <div style={{ fontSize: 11, color: '#8e24aa' }}>
                   {approvedCount.toLocaleString()} / {GOAL_SITES.toLocaleString()}
                 </div>
               </div>
             </div>
-
-            
           </div>
         </div>
       )}
