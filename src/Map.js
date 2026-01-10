@@ -33,19 +33,19 @@ function AddMarkerOnClick({ onMapClick }) {
   return null
 }
 
-// NEW: component that recenters the map reliably when "recenterTick" changes
+// Reliable recenter helper (no eslint-disable needed)
 function RecenterMap({ target, recenterTick }) {
   const map = useMap()
 
   useEffect(() => {
     if (!target) return
     map.setView([target.lat, target.lng], Math.max(map.getZoom(), 15), { animate: true })
-  }, [recenterTick]) // intentionally only reacts to tick
+  }, [recenterTick, map, target])
 
   return null
 }
 
-// blue dot icon (no image needed)
+// Blue dot icon (no image needed)
 const userDotIcon = L.divIcon({
   className: '',
   html: `
@@ -65,48 +65,68 @@ function Map({ user, profile, onSignInClick }) {
   const [sites, setSites] = useState([])
   const [userLocation, setUserLocation] = useState([51.9, -8.47])
   const [loading, setLoading] = useState(true)
+
   const [showForm, setShowForm] = useState(false)
   const [selectedPosition, setSelectedPosition] = useState(null)
+
   const [showAIModal, setShowAIModal] = useState(false)
   const [selectedSite, setSelectedSite] = useState(null)
+
   const [showAdminDashboard, setShowAdminDashboard] = useState(false)
   const [isAdmin, setIsAdmin] = useState(false)
+
   const [leaderboard, setLeaderboard] = useState([])
   const [showLeaderboard, setShowLeaderboard] = useState(false)
 
   const [showWelcome, setShowWelcome] = useState(false)
   const [showImpact, setShowImpact] = useState(false)
 
-  // NEW: live user location (dot only)
+  // Profile modal
+  const [showProfile, setShowProfile] = useState(false)
+
+  // Mobile detection (responsive top bar)
+  const [isMobile, setIsMobile] = useState(() =>
+    typeof window !== 'undefined' ? window.matchMedia('(max-width: 600px)').matches : false
+  )
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const mq = window.matchMedia('(max-width: 600px)')
+    const handler = () => setIsMobile(mq.matches)
+
+    if (mq.addEventListener) mq.addEventListener('change', handler)
+    else mq.addListener(handler)
+
+    handler()
+
+    return () => {
+      if (mq.removeEventListener) mq.removeEventListener('change', handler)
+      else mq.removeListener(handler)
+    }
+  }, [])
+
+  // Live user location (always show dot even if accuracy is poor)
   const [liveUserLocation, setLiveUserLocation] = useState(null) // { lat, lng }
   const [locationError, setLocationError] = useState('')
   const watchIdRef = useRef(null)
 
-  // NEW: tick used to trigger recenter inside the map
+  // Trigger tick for recentering via RecenterMap
   const [recenterTick, setRecenterTick] = useState(0)
-
-  // NEW: accuracy filtering
-  const lastGoodAccuracyRef = useRef(null)
-  const MAX_ACCEPTABLE_ACCURACY_METERS = 120 // tweak: 50 is strict, 150 is lenient
 
   useEffect(() => {
     loadSites()
     loadLeaderboard()
 
-    // One-time location (just to center initially)
+    // One-time initial center
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
-        (pos) => {
-          setUserLocation([pos.coords.latitude, pos.coords.longitude])
-        },
-        () => {
-          // ignore, keep default
-        },
+        (pos) => setUserLocation([pos.coords.latitude, pos.coords.longitude]),
+        () => {},
         { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
       )
     }
 
-    // Start live tracking (blue dot)
+    // Live tracking
     if ('geolocation' in navigator) {
       watchIdRef.current = navigator.geolocation.watchPosition(
         (pos) => {
@@ -114,33 +134,21 @@ function Map({ user, profile, onSignInClick }) {
           const lng = pos.coords.longitude
           const accuracy = pos.coords.accuracy ?? null
 
-          // If we have an accuracy reading and it's really poor, ignore it
-          if (typeof accuracy === 'number') {
-            if (accuracy > MAX_ACCEPTABLE_ACCURACY_METERS) {
-              // keep the dot where it was (prevents jumps to a worse estimate)
-              setLocationError(`Location is approximate (~${Math.round(accuracy)}m).`)
-              return
-            }
-
-            // track best accuracy seen
-            if (
-              lastGoodAccuracyRef.current === null ||
-              accuracy < lastGoodAccuracyRef.current
-            ) {
-              lastGoodAccuracyRef.current = accuracy
-            }
+          // IMPORTANT: don't block updates on desktop/localhost.
+          // If accuracy is poor, still show the dot, just warn.
+          if (typeof accuracy === 'number' && accuracy > 120) {
+            setLocationError(`Location is approximate (~${Math.round(accuracy)}m).`)
+          } else {
+            setLocationError('')
           }
 
           setLiveUserLocation({ lat, lng })
           setUserLocation([lat, lng])
-          setLocationError('')
         },
-        (err) => {
-          setLocationError(err?.message || 'Location permission denied.')
-        },
+        (err) => setLocationError(err?.message || 'Location permission denied.'),
         {
           enableHighAccuracy: true,
-          maximumAge: 0, // IMPORTANT: avoid cached WiFi location
+          maximumAge: 0,
           timeout: 20000,
         }
       )
@@ -152,9 +160,7 @@ function Map({ user, profile, onSignInClick }) {
     try {
       const seen = window.localStorage.getItem('derelict_welcome_seen')
       if (!seen) setShowWelcome(true)
-    } catch (e) {
-      // ignore
-    }
+    } catch (e) {}
 
     return () => {
       if (watchIdRef.current !== null && navigator.geolocation) {
@@ -164,9 +170,7 @@ function Map({ user, profile, onSignInClick }) {
   }, [])
 
   useEffect(() => {
-    if (user && profile) {
-      setIsAdmin(profile.is_admin || false)
-    }
+    if (user && profile) setIsAdmin(profile.is_admin || false)
   }, [user, profile])
 
   const loadSites = async () => {
@@ -243,7 +247,6 @@ function Map({ user, profile, onSignInClick }) {
       }
       return
     }
-
     setSelectedPosition(latlng)
     setShowForm(true)
   }
@@ -261,12 +264,10 @@ function Map({ user, profile, onSignInClick }) {
     setShowWelcome(false)
     try {
       window.localStorage.setItem('derelict_welcome_seen', 'true')
-    } catch (e) {
-      // ignore
-    }
+    } catch (e) {}
   }
 
-  // NEW: force a fresh high-accuracy reading + recenter
+  // Force fresh high-accuracy reading + recenter
   const recenterToUser = () => {
     if (!navigator.geolocation) return
 
@@ -276,24 +277,17 @@ function Map({ user, profile, onSignInClick }) {
         const lng = pos.coords.longitude
         const accuracy = pos.coords.accuracy ?? null
 
-        // If we got a better reading, accept it
-        if (typeof accuracy === 'number') {
-          if (accuracy > MAX_ACCEPTABLE_ACCURACY_METERS) {
-            setLocationError(`Location still approximate (~${Math.round(accuracy)}m). Try moving outside / turning on GPS.`)
-          } else {
-            setLocationError('')
-          }
+        if (typeof accuracy === 'number' && accuracy > 120) {
+          setLocationError(`Location is approximate (~${Math.round(accuracy)}m).`)
+        } else {
+          setLocationError('')
         }
 
         setLiveUserLocation({ lat, lng })
         setUserLocation([lat, lng])
-
-        // trigger the map recenter inside MapContainer
         setRecenterTick((t) => t + 1)
       },
-      (err) => {
-        setLocationError(err?.message || 'Could not fetch your location.')
-      },
+      (err) => setLocationError(err?.message || 'Could not fetch your location.'),
       { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 }
     )
   }
@@ -311,159 +305,156 @@ function Map({ user, profile, onSignInClick }) {
   const totalSites = sites.length
   const goalProgress = Math.min(approvedCount / GOAL_SITES, 1)
 
+  // Shared button style helper
+  const btnStyle = (bg) => ({
+    background: bg,
+    color: 'white',
+    border: 'none',
+    padding: isMobile ? '6px 10px' : '6px 12px',
+    borderRadius: 6,
+    cursor: 'pointer',
+    fontWeight: 'bold',
+    fontSize: isMobile ? 12 : 13,
+    lineHeight: 1.1,
+    whiteSpace: 'nowrap',
+  })
+
   return (
     <div style={{ height: '100vh', width: '100%' }}>
       {/* Top bar */}
       <div
         style={{
           position: 'absolute',
-          top: 10,
-          left: '50%',
-          transform: 'translateX(-50%)',
+          top: isMobile ? 60 : 10, // drop below Leaflet zoom controls on mobile
+          left: isMobile ? 10 : '50%',
+          right: isMobile ? 10 : 'auto',
+          transform: isMobile ? 'none' : 'translateX(-50%)',
           zIndex: 1000,
           background: 'white',
-          padding: '10px 20px',
+          padding: isMobile ? '8px 10px' : '10px 20px',
           borderRadius: 8,
           boxShadow: '0 2px 10px rgba(0,0,0,0.2)',
           display: 'flex',
           alignItems: 'center',
-          gap: 15,
-          maxWidth: '90vw',
+          gap: isMobile ? 8 : 15,
+          width: isMobile ? 'calc(100% - 20px)' : 'auto',
+          maxWidth: isMobile ? 'calc(100% - 20px)' : '90vw',
+          flexWrap: isMobile ? 'wrap' : 'nowrap',
         }}
       >
-        <div>
-          🏚️ <strong>{approvedCount}</strong> approved sites
+        <div style={{ whiteSpace: 'nowrap', fontSize: isMobile ? 12 : 14 }}>
+          🏚️ <strong>{approvedCount}</strong> {isMobile ? 'approved' : 'approved sites'}
         </div>
 
-        {/* Goal mini bar */}
-        <div style={{ display: 'flex', flexDirection: 'column', minWidth: 140 }}>
-          <span style={{ fontSize: 11, color: '#666' }}>
-            🎯 Goal: {GOAL_SITES.toLocaleString()} mapped
-          </span>
-          <div style={{ marginTop: 3, width: '100%', height: 6, borderRadius: 999, background: '#eee', overflow: 'hidden' }}>
-            <div style={{ width: `${goalProgress * 100}%`, height: '100%', background: '#4CAF50', transition: 'width 0.3s ease' }} />
+        {/* Goal mini bar (hide on mobile) */}
+        {!isMobile && (
+          <div style={{ display: 'flex', flexDirection: 'column', minWidth: 140 }}>
+            <span style={{ fontSize: 11, color: '#666' }}>
+              🎯 Goal: {GOAL_SITES.toLocaleString()} mapped
+            </span>
+            <div
+              style={{
+                marginTop: 3,
+                width: '100%',
+                height: 6,
+                borderRadius: 999,
+                background: '#eee',
+                overflow: 'hidden',
+              }}
+            >
+              <div
+                style={{
+                  width: `${goalProgress * 100}%`,
+                  height: '100%',
+                  background: '#4CAF50',
+                  transition: 'width 0.3s ease',
+                }}
+              />
+            </div>
           </div>
-        </div>
+        )}
 
-        {/* Leaderboard button */}
-        <button
-          onClick={() => setShowLeaderboard(!showLeaderboard)}
-          style={{
-            background: '#2196F3',
-            color: 'white',
-            border: 'none',
-            padding: '6px 12px',
-            borderRadius: 6,
-            cursor: 'pointer',
-            fontWeight: 'bold',
-            fontSize: 13,
-          }}
-        >
-          🏆 Leaderboard
+        <button onClick={() => setShowLeaderboard(!showLeaderboard)} style={btnStyle('#2196F3')}>
+          🏆{isMobile ? '' : ' Leaderboard'}
         </button>
 
-        {/* Impact button */}
-        <button
-          onClick={() => setShowImpact(true)}
-          style={{
-            background: '#673ab7',
-            color: 'white',
-            border: 'none',
-            padding: '6px 12px',
-            borderRadius: 6,
-            cursor: 'pointer',
-            fontWeight: 'bold',
-            fontSize: 13,
-          }}
-        >
-          📊 Impact
+        <button onClick={() => setShowImpact(true)} style={btnStyle('#673ab7')}>
+          📊{isMobile ? '' : ' Impact'}
         </button>
 
-        {/* My Location button */}
-        <button
-          onClick={recenterToUser}
-          title={locationError ? locationError : 'Recenter to your location'}
-          style={{
-            background: '#1a73e8',
-            color: 'white',
-            border: 'none',
-            padding: '6px 12px',
-            borderRadius: 6,
-            cursor: 'pointer',
-            fontWeight: 'bold',
-            fontSize: 13,
-          }}
-        >
-          📍 My Location
+        <button onClick={recenterToUser} title={locationError || 'Recenter'} style={btnStyle('#1a73e8')}>
+          📍{isMobile ? '' : ' My Location'}
         </button>
 
-        {profile && (
-          <div style={{ borderLeft: '1px solid #ddd', paddingLeft: 15 }}>
-            👤 <strong>@{profile.username}</strong>
-          </div>
+        {/* Profile button (only if signed in) */}
+        {user && (
+          <button onClick={() => setShowProfile(true)} style={btnStyle('#607d8b')}>
+            👤{isMobile ? '' : ' Profile'}
+          </button>
         )}
 
         {isAdmin && (
+          <button onClick={() => setShowAdminDashboard(true)} style={btnStyle('#ff9800')}>
+            🛡️{isMobile ? '' : ' Admin'} {pendingCount > 0 && `(${pendingCount})`}
+          </button>
+        )}
+
+        {/* Sign in/out moved into top bar on mobile */}
+        {isMobile &&
+          (user ? (
+            <button onClick={handleSignOut} style={btnStyle('#f44336')} title="Sign Out">
+              🚪
+            </button>
+          ) : (
+            <button onClick={onSignInClick} style={btnStyle('#4CAF50')} title="Sign In">
+              🔐
+            </button>
+          ))}
+      </div>
+
+      {/* Sign in/out button (desktop only) */}
+      {!isMobile &&
+        (user ? (
           <button
-            onClick={() => setShowAdminDashboard(true)}
+            onClick={handleSignOut}
             style={{
-              background: '#ff9800',
+              position: 'absolute',
+              top: 10,
+              right: 10,
+              zIndex: 1000,
+              background: '#f44336',
               color: 'white',
               border: 'none',
-              padding: '6px 12px',
+              padding: '8px 16px',
               borderRadius: 6,
               cursor: 'pointer',
               fontWeight: 'bold',
-              fontSize: 13,
+              fontSize: 14,
             }}
           >
-            🛡️ Admin {pendingCount > 0 && `(${pendingCount})`}
+            Sign Out
           </button>
-        )}
-      </div>
-
-      {/* Sign in/out button */}
-      {user ? (
-        <button
-          onClick={handleSignOut}
-          style={{
-            position: 'absolute',
-            top: 10,
-            right: 10,
-            zIndex: 1000,
-            background: '#f44336',
-            color: 'white',
-            border: 'none',
-            padding: '8px 16px',
-            borderRadius: 6,
-            cursor: 'pointer',
-            fontWeight: 'bold',
-            fontSize: 14,
-          }}
-        >
-          Sign Out
-        </button>
-      ) : (
-        <button
-          onClick={onSignInClick}
-          style={{
-            position: 'absolute',
-            top: 10,
-            right: 10,
-            zIndex: 1000,
-            background: '#4CAF50',
-            color: 'white',
-            border: 'none',
-            padding: '8px 16px',
-            borderRadius: 6,
-            cursor: 'pointer',
-            fontWeight: 'bold',
-            fontSize: 14,
-          }}
-        >
-          Sign In
-        </button>
-      )}
+        ) : (
+          <button
+            onClick={onSignInClick}
+            style={{
+              position: 'absolute',
+              top: 10,
+              right: 10,
+              zIndex: 1000,
+              background: '#4CAF50',
+              color: 'white',
+              border: 'none',
+              padding: '8px 16px',
+              borderRadius: 6,
+              cursor: 'pointer',
+              fontWeight: 'bold',
+              fontSize: 14,
+            }}
+          >
+            Sign In
+          </button>
+        ))}
 
       <MapContainer center={userLocation} zoom={13} style={{ height: '100%', width: '100%' }}>
         <TileLayer
@@ -473,13 +464,17 @@ function Map({ user, profile, onSignInClick }) {
 
         <AddMarkerOnClick onMapClick={handleMapClick} />
 
-        {/* Recenter helper */}
         <RecenterMap target={liveUserLocation} recenterTick={recenterTick} />
 
-        {/* Live user marker (dot only, no circle) */}
+        {/* Live user marker (dot only) */}
         {liveUserLocation && (
           <Marker position={[liveUserLocation.lat, liveUserLocation.lng]} icon={userDotIcon}>
-            <Popup>You are here</Popup>
+            <Popup>
+              <div>
+                <strong>You are here</strong>
+                {locationError && <div style={{ marginTop: 6, fontSize: 12, color: '#666' }}>{locationError}</div>}
+              </div>
+            </Popup>
           </Marker>
         )}
 
@@ -592,6 +587,18 @@ function Map({ user, profile, onSignInClick }) {
         />
       )}
 
+      {/* Profile modal */}
+      {showProfile && user && (
+        <ProfileScreen
+          user={user}
+          profile={profile}
+          onClose={() => {
+            setShowProfile(false)
+            // If ProfileScreen updates the profile in DB, you can optionally refresh page/profile here.
+          }}
+        />
+      )}
+
       {/* Leaderboard Modal (unchanged) */}
       {showLeaderboard && (
         <div
@@ -613,7 +620,13 @@ function Map({ user, profile, onSignInClick }) {
             <h3 style={{ margin: 0 }}>🏆 Top Discoverers</h3>
             <button
               onClick={() => setShowLeaderboard(false)}
-              style={{ background: 'transparent', border: 'none', fontSize: 24, cursor: 'pointer', color: '#999' }}
+              style={{
+                background: 'transparent',
+                border: 'none',
+                fontSize: 24,
+                cursor: 'pointer',
+                color: '#999',
+              }}
             >
               ×
             </button>
@@ -701,8 +714,8 @@ function Map({ user, profile, onSignInClick }) {
               ✨ Welcome to <span style={{ color: '#4CAF50' }}>Derelict Connect</span>
             </h2>
             <p style={{ marginTop: 0, color: '#555' }}>
-              We’re building a community map of derelict and long–term vacant sites in Ireland.
-              Every pin helps show the true scale of under–used buildings and land.
+              We’re building a community map of derelict and long–term vacant sites in Ireland. Every pin helps show the
+              true scale of under–used buildings and land.
             </p>
 
             <h3 style={{ marginTop: 18, marginBottom: 6 }}>What counts as a derelict site?</h3>
@@ -713,14 +726,17 @@ function Map({ user, profile, onSignInClick }) {
             </ul>
 
             <p style={{ color: '#666', fontSize: 14 }}>
-              Please avoid adding homes that are clearly lived in or in normal use. When in doubt, add a note in the description.
+              Please avoid adding homes that are clearly lived in or in normal use. When in doubt, add a note in the
+              description.
             </p>
 
             <h3 style={{ marginTop: 18, marginBottom: 6 }}>How it works</h3>
             <ul style={{ marginTop: 0, color: '#555', paddingLeft: 20, fontSize: 14 }}>
               <li>Click anywhere on the map to add a site.</li>
               <li>Add a photo, optional Eircode, and a short description.</li>
-              <li>Our AI reimagines what the site could become – housing, community spaces, or something bold and new.</li>
+              <li>
+                Our AI reimagines what the site could become – housing, community spaces, or something bold and new.
+              </li>
               <li>Sites are reviewed before being marked as “approved”.</li>
             </ul>
 
@@ -745,7 +761,7 @@ function Map({ user, profile, onSignInClick }) {
         </div>
       )}
 
-      {/* Impact modal (unchanged, trimmed for brevity in this snippet) */}
+      {/* Impact / goal modal */}
       {showImpact && (
         <div
           style={{
@@ -772,14 +788,22 @@ function Map({ user, profile, onSignInClick }) {
               <h2 style={{ margin: 0 }}>📊 Project impact</h2>
               <button
                 onClick={() => setShowImpact(false)}
-                style={{ background: 'transparent', border: 'none', fontSize: 24, cursor: 'pointer', color: '#999', lineHeight: 1 }}
+                style={{
+                  background: 'transparent',
+                  border: 'none',
+                  fontSize: 24,
+                  cursor: 'pointer',
+                  color: '#999',
+                  lineHeight: 1,
+                }}
               >
                 ×
               </button>
             </div>
 
             <p style={{ color: '#555', fontSize: 14 }}>
-              Derelict Connect is about making the hidden problem of dereliction visible – and turning it into a pipeline of opportunities for homes and community spaces.
+              Derelict Connect is about making the hidden problem of dereliction visible – and turning it into a pipeline
+              of opportunities for homes and community spaces.
             </p>
 
             <div style={{ marginTop: 16, display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 12 }}>
@@ -800,7 +824,9 @@ function Map({ user, profile, onSignInClick }) {
 
               <div style={{ padding: 12, borderRadius: 10, background: '#f3e5f5', textAlign: 'center' }}>
                 <div style={{ fontSize: 12, color: '#8e24aa' }}>Goal progress</div>
-                <div style={{ fontSize: 18, fontWeight: 'bold', color: '#6a1b9a' }}>{(goalProgress * 100).toFixed(1)}%</div>
+                <div style={{ fontSize: 18, fontWeight: 'bold', color: '#6a1b9a' }}>
+                  {(goalProgress * 100).toFixed(1)}%
+                </div>
                 <div style={{ fontSize: 11, color: '#8e24aa' }}>
                   {approvedCount.toLocaleString()} / {GOAL_SITES.toLocaleString()}
                 </div>
