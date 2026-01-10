@@ -1,3 +1,4 @@
+// src/AIReimager.js
 import React, { useState } from 'react'
 import { supabase, supabaseAnonKey } from './supabaseClient'
 
@@ -35,18 +36,81 @@ const HOME_VARIANTS = [
   }
 ]
 
+// ---- Helpers: upload AI result to Supabase Storage and store in DB ----
+
+async function uploadImageUrlToSupabase(imageUrl, userId) {
+  // Requires a public bucket named: ai-images
+  const res = await fetch(imageUrl)
+  if (!res.ok) throw new Error('Failed to download AI image')
+  const blob = await res.blob()
+
+  const contentType = blob.type || 'image/jpeg'
+  const ext = contentType.includes('png') ? 'png' : 'jpg'
+  const path = `${userId}/${Date.now()}-${Math.random().toString(16).slice(2)}.${ext}`
+
+  const { error: uploadError } = await supabase.storage
+    .from('ai-images')
+    .upload(path, blob, { contentType, upsert: false })
+
+  if (uploadError) throw uploadError
+
+  const { data } = supabase.storage.from('ai-images').getPublicUrl(path)
+  if (!data?.publicUrl) throw new Error('Could not get public URL for uploaded image')
+  return data.publicUrl
+}
+
+async function saveGenerationToDbAndStorage({ siteId, userId, imageUrl, prompt, conceptType }) {
+  // 1) upload to storage so it never expires
+  const publicUrl = await uploadImageUrlToSupabase(imageUrl, userId)
+
+  // 2) store DB row
+  const { data, error } = await supabase
+    .from('ai_generations')
+    .insert({
+      site_id: siteId,
+      user_id: userId,
+      image_url: publicUrl,
+      prompt: prompt || null,
+      concept_type: conceptType || null
+    })
+    .select('id, image_url')
+    .single()
+
+  if (error) throw error
+  return data // { id, image_url }
+}
+
+async function sharePost({ siteId, generationId, userId, caption }) {
+  const { data, error } = await supabase
+    .from('posts')
+    .insert({
+      site_id: siteId,
+      generation_id: generationId,
+      user_id: userId,
+      caption: caption || null
+    })
+    .select('id')
+    .single()
+
+  if (error) throw error
+  return data
+}
+
 function AIReimager({ site, onClose }) {
   const hasPhoto = !!site?.photo_url
 
-  const [notes, setNotes] = useState('')          // optional extra text from user
+  const [notes, setNotes] = useState('')
   const [generating, setGenerating] = useState(false)
-  const [progress, setProgress] = useState(0)     // 0–100
+  const [progress, setProgress] = useState(0)
   const [status, setStatus] = useState('')
   const [error, setError] = useState(null)
 
-  const [results, setResults] = useState([])      // [{ key, label, url }]
-  const [selected, setSelected] = useState(null)  // { key, label, url } or null
-  const [currentIndex, setCurrentIndex] = useState(-1) // which variant we’re currently generating
+  // results: [{ key, label, url, generationId, storedUrl, promptUsed }]
+  const [results, setResults] = useState([])
+  const [selected, setSelected] = useState(null)
+  const [currentIndex, setCurrentIndex] = useState(-1)
+
+  const [sharingId, setSharingId] = useState(null)
 
   const resetStateForGeneration = () => {
     setGenerating(true)
@@ -56,6 +120,7 @@ function AIReimager({ site, onClose }) {
     setSelected(null)
     setError(null)
     setCurrentIndex(-1)
+    setSharingId(null)
   }
 
   const handleGenerate = async () => {
@@ -63,6 +128,13 @@ function AIReimager({ site, onClose }) {
     resetStateForGeneration()
 
     try {
+      // Must be signed in to save/share (needed for Storage + DB writes)
+      const auth = await supabase.auth.getUser()
+      const userId = auth?.data?.user?.id
+      if (!userId) {
+        throw new Error('Please sign in to generate and save AI images.')
+      }
+
       const basePrompt = [
         'Design a new home on this derelict site.',
         'Use the same camera angle as the original photo, realistic materials and lighting.',
@@ -82,11 +154,10 @@ function AIReimager({ site, onClose }) {
           .filter(Boolean)
           .join(' ')
 
-        // we keep sending mode/strength for compatibility with your existing edge function
         const mode = hasPhoto ? 'preserve' : 'newbuild'
         const strength = hasPhoto ? 0.35 : 0.7
 
-        const { data, error } = await supabase.functions.invoke('generate-image', {
+        const { data, error: fnError } = await supabase.functions.invoke('generate-image', {
           body: {
             prompt: fullPrompt,
             mode,
@@ -98,30 +169,47 @@ function AIReimager({ site, onClose }) {
           }
         })
 
-        if (error) {
+        if (fnError) {
           const details =
-            typeof error?.context?.body === 'string'
-              ? error.context.body
-              : JSON.stringify(error?.context?.body || {}, null, 2)
+            typeof fnError?.context?.body === 'string'
+              ? fnError.context.body
+              : JSON.stringify(fnError?.context?.body || {}, null, 2)
           throw new Error(details)
         }
 
-        const url =
+        const returnedUrl =
           data?.imageUrl ||
           (Array.isArray(data?.images) && data.images[0]) ||
           null
 
-        if (!url) {
+        if (!returnedUrl) {
           throw new Error(`No image returned for ${variant.label}`)
         }
 
-        // append this result
-        setResults(prev => {
-          const next = [...prev, { key: variant.key, label: variant.label, url }]
-          // select the first generated option automatically
-          if (next.length === 1) {
-            setSelected(next[0])
-          }
+        // ✅ Save AI image permanently (Storage + ai_generations row)
+        setStatus(`Saving ${variant.label}…`)
+        const saved = await saveGenerationToDbAndStorage({
+          siteId: site.id,
+          userId,
+          imageUrl: returnedUrl,
+          prompt: fullPrompt,
+          conceptType: variant.key
+        })
+
+        // append this result (use storedUrl for display)
+        setResults((prev) => {
+          const next = [
+            ...prev,
+            {
+              key: variant.key,
+              label: variant.label,
+              url: saved.image_url, // display the stable storage URL
+              generationId: saved.id,
+              storedUrl: saved.image_url,
+              promptUsed: fullPrompt
+            }
+          ]
+          if (next.length === 1) setSelected(next[0])
           return next
         })
 
@@ -137,15 +225,45 @@ function AIReimager({ site, onClose }) {
     } finally {
       setGenerating(false)
       setCurrentIndex(-1)
-      if (progress < 100 && !error) {
-        setProgress(100)
-      }
     }
   }
 
   const handleCardClick = (variantKey) => {
-    const found = results.find(r => r.key === variantKey)
+    const found = results.find((r) => r.key === variantKey)
     if (found) setSelected(found)
+  }
+
+  const handleShareSelected = async () => {
+    if (!selected?.generationId) {
+      alert('Please generate and select a concept first.')
+      return
+    }
+
+    try {
+      const auth = await supabase.auth.getUser()
+      const userId = auth?.data?.user?.id
+      if (!userId) {
+        alert('Sign in to share.')
+        return
+      }
+
+      setSharingId(selected.generationId)
+      const caption = window.prompt('Caption (optional):', '') || ''
+
+      await sharePost({
+        siteId: site.id,
+        generationId: selected.generationId,
+        userId,
+        caption
+      })
+
+      alert('Posted ✅ Open the Feed to see it!')
+    } catch (e) {
+      console.error(e)
+      alert(e.message || 'Failed to post.')
+    } finally {
+      setSharingId(null)
+    }
   }
 
   const renderProgress = () => {
@@ -181,6 +299,7 @@ function AIReimager({ site, onClose }) {
         You&apos;ll get one concept for each type: bungalow, 2-storey, attached garage,
         detached garage, and a bold unique design.
       </p>
+
       <div
         style={{
           display: 'grid',
@@ -189,7 +308,7 @@ function AIReimager({ site, onClose }) {
         }}
       >
         {HOME_VARIANTS.map((variant, i) => {
-          const result = results.find(r => r.key === variant.key)
+          const result = results.find((r) => r.key === variant.key)
           const isSelected = selected?.key === variant.key
           const isGeneratingThis = generating && currentIndex === i
 
@@ -243,6 +362,11 @@ function AIReimager({ site, onClose }) {
               </div>
               <div style={{ padding: '6px 8px 8px' }}>
                 <strong style={{ fontSize: 13 }}>{variant.label}</strong>
+                {result?.generationId && (
+                  <div style={{ fontSize: 11, color: '#666', marginTop: 4 }}>
+                    Saved ✅
+                  </div>
+                )}
               </div>
             </div>
           )
@@ -279,7 +403,6 @@ function AIReimager({ site, onClose }) {
         }}
       >
         <h2 style={{ marginTop: 0, color: 'black' }}>✨ NEW REIMAGINE {site?.name}</h2>
-
 
         {/* Top row: original + selected */}
         <div
@@ -356,6 +479,28 @@ function AIReimager({ site, onClose }) {
                   : 'Click “Generate Reimagination” to see 5 concept options for this site.'}
               </div>
             )}
+
+            {/* Share selected */}
+            {selected?.generationId && (
+              <button
+                onClick={handleShareSelected}
+                disabled={generating || sharingId === selected.generationId}
+                style={{
+                  marginTop: 10,
+                  width: '100%',
+                  padding: 12,
+                  backgroundColor: (generating || sharingId === selected.generationId) ? '#ccc' : '#111',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: 8,
+                  fontSize: 15,
+                  fontWeight: 'bold',
+                  cursor: (generating || sharingId === selected.generationId) ? 'not-allowed' : 'pointer'
+                }}
+              >
+                {sharingId === selected.generationId ? 'Posting…' : '📣 Share selected to Feed'}
+              </button>
+            )}
           </div>
         </div>
 
@@ -427,6 +572,7 @@ function AIReimager({ site, onClose }) {
           >
             {generating ? '✨ Generating reimagination…' : '🎨 Generate Reimagination'}
           </button>
+
           <button
             onClick={onClose}
             disabled={generating}
@@ -452,3 +598,4 @@ function AIReimager({ site, onClose }) {
 }
 
 export default AIReimager
+

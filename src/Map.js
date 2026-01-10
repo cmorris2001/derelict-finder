@@ -15,6 +15,7 @@ import SiteForm from './SiteForm'
 import AIReimager from './AIReimager'
 import AdminDashboard from './AdminDashboard'
 import ProfileScreen from './ProfileScreen'
+import PostsFeed from './PostsFeed'
 
 // fix marker icons in React-Leaflet
 delete L.Icon.Default.prototype._getIconUrl
@@ -81,10 +82,11 @@ function Map({ user, profile, onSignInClick }) {
   const [showWelcome, setShowWelcome] = useState(false)
   const [showImpact, setShowImpact] = useState(false)
 
-  // Profile modal
+  // Profile + Feed modals
   const [showProfile, setShowProfile] = useState(false)
+  const [showFeed, setShowFeed] = useState(false)
 
-  // ✅ Favorites: list of site_ids
+  // Favorites: list of site_ids
   const [favoriteSiteIds, setFavoriteSiteIds] = useState([])
 
   // Mobile detection
@@ -137,7 +139,6 @@ function Map({ user, profile, onSignInClick }) {
           const lng = pos.coords.longitude
           const accuracy = pos.coords.accuracy ?? null
 
-          // Don’t block updates; warn if approximate
           if (typeof accuracy === 'number' && accuracy > 120) {
             setLocationError(`Location is approximate (~${Math.round(accuracy)}m).`)
           } else {
@@ -171,20 +172,19 @@ function Map({ user, profile, onSignInClick }) {
     if (user && profile) setIsAdmin(profile.is_admin || false)
   }, [user, profile])
 
-  // ✅ Load favorites whenever the user changes (or logs in/out)
+  // Load favorites whenever user changes
   useEffect(() => {
     if (!user) {
       setFavoriteSiteIds([])
       return
     }
     loadFavorites()
-    // eslint not needed; dependencies are correct
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user])
 
   const loadFavorites = async () => {
     try {
       if (!user) return
-
       const { data, error } = await supabase
         .from('favorites')
         .select('site_id')
@@ -403,6 +403,11 @@ function Map({ user, profile, onSignInClick }) {
           </div>
         )}
 
+        {/* NEW: Feed */}
+        <button onClick={() => setShowFeed(true)} style={btnStyle('#111')}>
+          📰{isMobile ? '' : ' Feed'}
+        </button>
+
         <button onClick={() => setShowLeaderboard(!showLeaderboard)} style={btnStyle('#2196F3')}>
           🏆{isMobile ? '' : ' Leaderboard'}
         </button>
@@ -500,7 +505,9 @@ function Map({ user, profile, onSignInClick }) {
             <Popup>
               <div>
                 <strong>You are here</strong>
-                {locationError && <div style={{ marginTop: 6, fontSize: 12, color: '#666' }}>{locationError}</div>}
+                {locationError && (
+                  <div style={{ marginTop: 6, fontSize: 12, color: '#666' }}>{locationError}</div>
+                )}
               </div>
             </Popup>
           </Marker>
@@ -615,7 +622,7 @@ function Map({ user, profile, onSignInClick }) {
         />
       )}
 
-      {/* ✅ Profile modal with props */}
+      {/* Profile modal with props */}
       {showProfile && user && (
         <ProfileScreen
           user={user}
@@ -625,12 +632,15 @@ function Map({ user, profile, onSignInClick }) {
           leaderboard={leaderboard}
           onClose={async () => {
             setShowProfile(false)
-            await loadFavorites() // refresh in case you add/remove favorites later
+            await loadFavorites()
           }}
         />
       )}
 
-      {/* Leaderboard Modal (unchanged) */}
+      {/* NEW: Global feed modal */}
+      {showFeed && <PostsFeed user={user} onClose={() => setShowFeed(false)} />}
+
+      {/* Leaderboard Modal */}
       {showLeaderboard && (
         <div
           style={{
@@ -731,28 +741,6 @@ function Map({ user, profile, onSignInClick }) {
               true scale of under–used buildings and land.
             </p>
 
-            <h3 style={{ marginTop: 18, marginBottom: 6 }}>What counts as a derelict site?</h3>
-            <ul style={{ marginTop: 0, color: '#555', paddingLeft: 20, fontSize: 14 }}>
-              <li>Clearly abandoned or not lived in for a long time</li>
-              <li>In poor or unsafe condition (broken windows, overgrown, boarded up, etc.)</li>
-              <li>Not obviously under active renovation</li>
-            </ul>
-
-            <p style={{ color: '#666', fontSize: 14 }}>
-              Please avoid adding homes that are clearly lived in or in normal use. When in doubt, add a note in the
-              description.
-            </p>
-
-            <h3 style={{ marginTop: 18, marginBottom: 6 }}>How it works</h3>
-            <ul style={{ marginTop: 0, color: '#555', paddingLeft: 20, fontSize: 14 }}>
-              <li>Click anywhere on the map to add a site.</li>
-              <li>Add a photo, optional Eircode, and a short description.</li>
-              <li>
-                Our AI reimagines what the site could become – housing, community spaces, or something bold and new.
-              </li>
-              <li>Sites are reviewed before being marked as “approved”.</li>
-            </ul>
-
             <div style={{ marginTop: 20, display: 'flex', justifyContent: 'flex-end' }}>
               <button
                 onClick={handleDismissWelcome}
@@ -814,35 +802,18 @@ function Map({ user, profile, onSignInClick }) {
               </button>
             </div>
 
-            <p style={{ color: '#555', fontSize: 14 }}>
-              Derelict Connect is about making the hidden problem of dereliction visible – and turning it into a pipeline
-              of opportunities for homes and community spaces.
-            </p>
+            <div style={{ color: '#555', fontSize: 14 }}>
+              Approved: <strong>{approvedCount}</strong> · Pending: <strong>{pendingCount}</strong> · Total:{' '}
+              <strong>{totalSites}</strong>
+            </div>
 
-            <div style={{ marginTop: 16, display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 12 }}>
-              <div style={{ padding: 12, borderRadius: 10, background: '#e8f5e9', textAlign: 'center' }}>
-                <div style={{ fontSize: 12, color: '#388e3c' }}>Approved sites</div>
-                <div style={{ fontSize: 26, fontWeight: 'bold', color: '#1b5e20' }}>{approvedCount}</div>
+            <div style={{ marginTop: 16 }}>
+              <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>
+                Goal progress: {(goalProgress * 100).toFixed(1)}% ({approvedCount.toLocaleString()} /{' '}
+                {GOAL_SITES.toLocaleString()})
               </div>
-
-              <div style={{ padding: 12, borderRadius: 10, background: '#e3f2fd', textAlign: 'center' }}>
-                <div style={{ fontSize: 12, color: '#1976d2' }}>Total mapped</div>
-                <div style={{ fontSize: 26, fontWeight: 'bold', color: '#0d47a1' }}>{totalSites}</div>
-              </div>
-
-              <div style={{ padding: 12, borderRadius: 10, background: '#fff8e1', textAlign: 'center' }}>
-                <div style={{ fontSize: 12, color: '#f9a825' }}>Pending review</div>
-                <div style={{ fontSize: 26, fontWeight: 'bold', color: '#f57f17' }}>{pendingCount}</div>
-              </div>
-
-              <div style={{ padding: 12, borderRadius: 10, background: '#f3e5f5', textAlign: 'center' }}>
-                <div style={{ fontSize: 12, color: '#8e24aa' }}>Goal progress</div>
-                <div style={{ fontSize: 18, fontWeight: 'bold', color: '#6a1b9a' }}>
-                  {(goalProgress * 100).toFixed(1)}%
-                </div>
-                <div style={{ fontSize: 11, color: '#8e24aa' }}>
-                  {approvedCount.toLocaleString()} / {GOAL_SITES.toLocaleString()}
-                </div>
+              <div style={{ width: '100%', height: 10, background: '#eee', borderRadius: 999, overflow: 'hidden' }}>
+                <div style={{ width: `${goalProgress * 100}%`, height: '100%', background: '#4CAF50' }} />
               </div>
             </div>
           </div>
