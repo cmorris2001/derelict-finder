@@ -1,4 +1,5 @@
-import React, { useEffect, useState } from 'react'
+// src/ProfileScreen.js
+import React, { useEffect, useMemo, useState } from 'react'
 import { supabase } from './supabaseClient'
 
 function ProfileScreen({ user, profile, sites, favoriteSiteIds, leaderboard, onClose }) {
@@ -8,36 +9,60 @@ function ProfileScreen({ user, profile, sites, favoriteSiteIds, leaderboard, onC
   const [favorites, setFavorites] = useState([])
   const [rankInfo, setRankInfo] = useState(null)
 
+  // ✅ SAFETY: default to empty arrays if undefined
+  const safeSites = useMemo(() => (Array.isArray(sites) ? sites : []), [sites])
+  const safeFavoriteIds = useMemo(
+    () => (Array.isArray(favoriteSiteIds) ? favoriteSiteIds : []),
+    [favoriteSiteIds]
+  )
+  const safeLeaderboard = useMemo(
+    () => (Array.isArray(leaderboard) ? leaderboard : []),
+    [leaderboard]
+  )
+
+  useEffect(() => {
+    // keep input in sync if profile changes
+    setUsername(profile?.username || '')
+  }, [profile])
+
   useEffect(() => {
     if (!user) return
+
     // Sites discovered by this user
-    setUserSites(sites.filter((s) => s.user_id === user.id))
+    setUserSites(safeSites.filter((s) => s.user_id === user.id))
 
     // Favourite sites
-    setFavorites(sites.filter((s) => favoriteSiteIds.includes(s.id)))
+    setFavorites(safeSites.filter((s) => safeFavoriteIds.includes(s.id)))
 
     // Leaderboard position
-    if (leaderboard && profile?.username) {
-      const index = leaderboard.findIndex((entry) => entry.username === profile.username)
+    if (profile?.username) {
+      const index = safeLeaderboard.findIndex((entry) => entry.username === profile.username)
       if (index !== -1) {
         setRankInfo({
           rank: index + 1,
-          count: leaderboard[index].count,
+          count: safeLeaderboard[index].count,
         })
       } else {
         setRankInfo(null)
       }
+    } else {
+      setRankInfo(null)
     }
-  }, [user, profile, sites, favoriteSiteIds, leaderboard])
+  }, [user, profile, safeSites, safeFavoriteIds, safeLeaderboard])
 
   const approvedCount = userSites.filter((s) => s.status === 'approved').length
   const pendingCount = userSites.filter((s) => s.status === 'pending').length
 
   const handleSaveUsername = async () => {
+    if (!user) {
+      alert('You must be signed in.')
+      return
+    }
     if (!username.trim()) {
       alert('Username cannot be empty')
       return
     }
+
     setSaving(true)
     try {
       const { error } = await supabase
@@ -57,6 +82,7 @@ function ProfileScreen({ user, profile, sites, favoriteSiteIds, leaderboard, onC
 
   return (
     <div
+      onClick={onClose}
       style={{
         position: 'fixed',
         inset: 0,
@@ -69,6 +95,7 @@ function ProfileScreen({ user, profile, sites, favoriteSiteIds, leaderboard, onC
       }}
     >
       <div
+        onClick={(e) => e.stopPropagation()}
         style={{
           background: 'white',
           borderRadius: 16,
@@ -140,38 +167,21 @@ function ProfileScreen({ user, profile, sites, favoriteSiteIds, leaderboard, onC
             marginBottom: 24,
           }}
         >
-          <div
-            style={{
-              padding: 16,
-              borderRadius: 12,
-              background: '#e3f2fd',
-            }}
-          >
+          <div style={{ padding: 16, borderRadius: 12, background: '#e3f2fd' }}>
             <div style={{ fontSize: 13, color: '#555' }}>Approved discoveries</div>
             <div style={{ fontSize: 28, fontWeight: 'bold', color: '#1976d2' }}>{approvedCount}</div>
           </div>
-          <div
-            style={{
-              padding: 16,
-              borderRadius: 12,
-              background: '#fff3e0',
-            }}
-          >
+
+          <div style={{ padding: 16, borderRadius: 12, background: '#fff3e0' }}>
             <div style={{ fontSize: 13, color: '#555' }}>Pending approval</div>
             <div style={{ fontSize: 28, fontWeight: 'bold', color: '#f57c00' }}>{pendingCount}</div>
           </div>
-          <div
-            style={{
-              padding: 16,
-              borderRadius: 12,
-              background: '#f3e5f5',
-            }}
-          >
+
+          <div style={{ padding: 16, borderRadius: 12, background: '#f3e5f5' }}>
             <div style={{ fontSize: 13, color: '#555' }}>Leaderboard</div>
             {rankInfo ? (
               <div style={{ fontSize: 16, marginTop: 4 }}>
-                Rank <strong>#{rankInfo.rank}</strong> with{' '}
-                <strong>{rankInfo.count}</strong> approved site
+                Rank <strong>#{rankInfo.rank}</strong> with <strong>{rankInfo.count}</strong> approved site
                 {rankInfo.count === 1 ? '' : 's'}
               </div>
             ) : (
@@ -272,3 +282,4 @@ function ProfileScreen({ user, profile, sites, favoriteSiteIds, leaderboard, onC
 }
 
 export default ProfileScreen
+

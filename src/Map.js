@@ -33,7 +33,7 @@ function AddMarkerOnClick({ onMapClick }) {
   return null
 }
 
-// Reliable recenter helper (no eslint-disable needed)
+// Reliable recenter helper
 function RecenterMap({ target, recenterTick }) {
   const map = useMap()
 
@@ -84,7 +84,10 @@ function Map({ user, profile, onSignInClick }) {
   // Profile modal
   const [showProfile, setShowProfile] = useState(false)
 
-  // Mobile detection (responsive top bar)
+  // ✅ Favorites: list of site_ids
+  const [favoriteSiteIds, setFavoriteSiteIds] = useState([])
+
+  // Mobile detection
   const [isMobile, setIsMobile] = useState(() =>
     typeof window !== 'undefined' ? window.matchMedia('(max-width: 600px)').matches : false
   )
@@ -105,12 +108,12 @@ function Map({ user, profile, onSignInClick }) {
     }
   }, [])
 
-  // Live user location (always show dot even if accuracy is poor)
+  // Live user location
   const [liveUserLocation, setLiveUserLocation] = useState(null) // { lat, lng }
   const [locationError, setLocationError] = useState('')
   const watchIdRef = useRef(null)
 
-  // Trigger tick for recentering via RecenterMap
+  // Recenter trigger
   const [recenterTick, setRecenterTick] = useState(0)
 
   useEffect(() => {
@@ -134,8 +137,7 @@ function Map({ user, profile, onSignInClick }) {
           const lng = pos.coords.longitude
           const accuracy = pos.coords.accuracy ?? null
 
-          // IMPORTANT: don't block updates on desktop/localhost.
-          // If accuracy is poor, still show the dot, just warn.
+          // Don’t block updates; warn if approximate
           if (typeof accuracy === 'number' && accuracy > 120) {
             setLocationError(`Location is approximate (~${Math.round(accuracy)}m).`)
           } else {
@@ -146,11 +148,7 @@ function Map({ user, profile, onSignInClick }) {
           setUserLocation([lat, lng])
         },
         (err) => setLocationError(err?.message || 'Location permission denied.'),
-        {
-          enableHighAccuracy: true,
-          maximumAge: 0,
-          timeout: 20000,
-        }
+        { enableHighAccuracy: true, maximumAge: 0, timeout: 20000 }
       )
     } else {
       setLocationError('Geolocation is not supported by this browser.')
@@ -173,6 +171,38 @@ function Map({ user, profile, onSignInClick }) {
     if (user && profile) setIsAdmin(profile.is_admin || false)
   }, [user, profile])
 
+  // ✅ Load favorites whenever the user changes (or logs in/out)
+  useEffect(() => {
+    if (!user) {
+      setFavoriteSiteIds([])
+      return
+    }
+    loadFavorites()
+    // eslint not needed; dependencies are correct
+  }, [user])
+
+  const loadFavorites = async () => {
+    try {
+      if (!user) return
+
+      const { data, error } = await supabase
+        .from('favorites')
+        .select('site_id')
+        .eq('user_id', user.id)
+
+      if (error) throw error
+
+      const ids = (data || [])
+        .map((row) => row.site_id)
+        .filter((v) => v !== null && v !== undefined)
+
+      setFavoriteSiteIds(ids)
+    } catch (err) {
+      console.error('Error loading favorites:', err)
+      setFavoriteSiteIds([])
+    }
+  }
+
   const loadSites = async () => {
     try {
       const { data: sitesData, error: sitesError } = await supabase
@@ -188,12 +218,12 @@ function Map({ user, profile, onSignInClick }) {
 
       if (profilesError) throw profilesError
 
-      const sitesWithProfiles = sitesData.map((site) => ({
+      const sitesWithProfiles = (sitesData || []).map((site) => ({
         ...site,
         profiles: site.user_id ? profilesData.find((p) => p.id === site.user_id) : null,
       }))
 
-      setSites(sitesWithProfiles || [])
+      setSites(sitesWithProfiles)
     } catch (err) {
       console.error('Error loading sites:', err)
       alert('Error loading sites: ' + err.message)
@@ -218,9 +248,9 @@ function Map({ user, profile, onSignInClick }) {
       if (profilesError) throw profilesError
 
       const counts = {}
-      sitesData.forEach((site) => {
+      ;(sitesData || []).forEach((site) => {
         if (site.user_id) {
-          const userProfile = profilesData.find((p) => p.id === site.user_id)
+          const userProfile = (profilesData || []).find((p) => p.id === site.user_id)
           if (userProfile) {
             const username = userProfile.username
             counts[username] = (counts[username] || 0) + 1
@@ -258,6 +288,7 @@ function Map({ user, profile, onSignInClick }) {
 
   const handleSignOut = async () => {
     await supabase.auth.signOut()
+    setFavoriteSiteIds([])
   }
 
   const handleDismissWelcome = () => {
@@ -267,7 +298,7 @@ function Map({ user, profile, onSignInClick }) {
     } catch (e) {}
   }
 
-  // Force fresh high-accuracy reading + recenter
+  // Force fresh location + recenter
   const recenterToUser = () => {
     if (!navigator.geolocation) return
 
@@ -305,7 +336,6 @@ function Map({ user, profile, onSignInClick }) {
   const totalSites = sites.length
   const goalProgress = Math.min(approvedCount / GOAL_SITES, 1)
 
-  // Shared button style helper
   const btnStyle = (bg) => ({
     background: bg,
     color: 'white',
@@ -325,7 +355,7 @@ function Map({ user, profile, onSignInClick }) {
       <div
         style={{
           position: 'absolute',
-          top: isMobile ? 60 : 10, // drop below Leaflet zoom controls on mobile
+          top: isMobile ? 60 : 10,
           left: isMobile ? 10 : '50%',
           right: isMobile ? 10 : 'auto',
           transform: isMobile ? 'none' : 'translateX(-50%)',
@@ -346,7 +376,6 @@ function Map({ user, profile, onSignInClick }) {
           🏚️ <strong>{approvedCount}</strong> {isMobile ? 'approved' : 'approved sites'}
         </div>
 
-        {/* Goal mini bar (hide on mobile) */}
         {!isMobile && (
           <div style={{ display: 'flex', flexDirection: 'column', minWidth: 140 }}>
             <span style={{ fontSize: 11, color: '#666' }}>
@@ -386,7 +415,7 @@ function Map({ user, profile, onSignInClick }) {
           📍{isMobile ? '' : ' My Location'}
         </button>
 
-        {/* Profile button (only if signed in) */}
+        {/* Profile button */}
         {user && (
           <button onClick={() => setShowProfile(true)} style={btnStyle('#607d8b')}>
             👤{isMobile ? '' : ' Profile'}
@@ -399,7 +428,7 @@ function Map({ user, profile, onSignInClick }) {
           </button>
         )}
 
-        {/* Sign in/out moved into top bar on mobile */}
+        {/* Sign in/out (mobile) */}
         {isMobile &&
           (user ? (
             <button onClick={handleSignOut} style={btnStyle('#f44336')} title="Sign Out">
@@ -412,7 +441,7 @@ function Map({ user, profile, onSignInClick }) {
           ))}
       </div>
 
-      {/* Sign in/out button (desktop only) */}
+      {/* Sign in/out (desktop) */}
       {!isMobile &&
         (user ? (
           <button
@@ -463,10 +492,9 @@ function Map({ user, profile, onSignInClick }) {
         />
 
         <AddMarkerOnClick onMapClick={handleMapClick} />
-
         <RecenterMap target={liveUserLocation} recenterTick={recenterTick} />
 
-        {/* Live user marker (dot only) */}
+        {/* Live user marker */}
         {liveUserLocation && (
           <Marker position={[liveUserLocation.lat, liveUserLocation.lng]} icon={userDotIcon}>
             <Popup>
@@ -587,14 +615,17 @@ function Map({ user, profile, onSignInClick }) {
         />
       )}
 
-      {/* Profile modal */}
+      {/* ✅ Profile modal with props */}
       {showProfile && user && (
         <ProfileScreen
           user={user}
           profile={profile}
-          onClose={() => {
+          sites={sites}
+          favoriteSiteIds={favoriteSiteIds}
+          leaderboard={leaderboard}
+          onClose={async () => {
             setShowProfile(false)
-            // If ProfileScreen updates the profile in DB, you can optionally refresh page/profile here.
+            await loadFavorites() // refresh in case you add/remove favorites later
           }}
         />
       )}
@@ -620,13 +651,7 @@ function Map({ user, profile, onSignInClick }) {
             <h3 style={{ margin: 0 }}>🏆 Top Discoverers</h3>
             <button
               onClick={() => setShowLeaderboard(false)}
-              style={{
-                background: 'transparent',
-                border: 'none',
-                fontSize: 24,
-                cursor: 'pointer',
-                color: '#999',
-              }}
+              style={{ background: 'transparent', border: 'none', fontSize: 24, cursor: 'pointer', color: '#999' }}
             >
               ×
             </button>
@@ -670,18 +695,6 @@ function Map({ user, profile, onSignInClick }) {
                   </span>
                 </div>
               ))}
-            </div>
-          )}
-
-          {profile && (
-            <div style={{ marginTop: 20, padding: 15, background: '#e3f2fd', borderRadius: 8, textAlign: 'center' }}>
-              <div style={{ fontSize: 13, color: '#666', marginBottom: 5 }}>Your discoveries</div>
-              <div style={{ fontSize: 24, fontWeight: 'bold', color: '#2196F3' }}>
-                {sites.filter((s) => s.user_id === user?.id && s.status === 'approved').length}
-              </div>
-              <div style={{ fontSize: 12, color: '#999', marginTop: 5 }}>
-                ({sites.filter((s) => s.user_id === user?.id && s.status === 'pending').length} pending approval)
-              </div>
             </div>
           )}
         </div>
@@ -761,7 +774,7 @@ function Map({ user, profile, onSignInClick }) {
         </div>
       )}
 
-      {/* Impact / goal modal */}
+      {/* Impact modal */}
       {showImpact && (
         <div
           style={{
