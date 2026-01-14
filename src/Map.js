@@ -34,16 +34,35 @@ function AddMarkerOnClick({ onMapClick }) {
   return null
 }
 
-// Reliable recenter helper
+// ✅ Recenter ONLY when recenterTick changes (no more "follow me" lock)
 function RecenterMap({ target, recenterTick }) {
   const map = useMap()
+  const targetRef = useRef(target)
 
   useEffect(() => {
-    if (!target) return
-    map.setView([target.lat, target.lng], Math.max(map.getZoom(), 15), { animate: true })
-  }, [recenterTick, map, target])
+    targetRef.current = target
+  }, [target])
+
+  useEffect(() => {
+    const t = targetRef.current
+    if (!t) return
+    map.setView([t.lat, t.lng], Math.max(map.getZoom(), 15), { animate: true })
+  }, [recenterTick, map])
 
   return null
+}
+
+// ✅ Stop Leaflet swallowing clicks inside the popup (mobile safe)
+function PopupSafeArea({ children }) {
+  const ref = useRef(null)
+
+  useEffect(() => {
+    if (!ref.current) return
+    L.DomEvent.disableClickPropagation(ref.current)
+    L.DomEvent.disableScrollPropagation(ref.current)
+  }, [])
+
+  return <div ref={ref}>{children}</div>
 }
 
 // Blue dot icon (no image needed)
@@ -115,7 +134,7 @@ function Map({ user, profile, onSignInClick }) {
   const [locationError, setLocationError] = useState('')
   const watchIdRef = useRef(null)
 
-  // Recenter trigger
+  // Recenter trigger (manual)
   const [recenterTick, setRecenterTick] = useState(0)
 
   useEffect(() => {
@@ -131,7 +150,7 @@ function Map({ user, profile, onSignInClick }) {
       )
     }
 
-    // Live tracking
+    // Live tracking (updates dot, does NOT force-follow)
     if ('geolocation' in navigator) {
       watchIdRef.current = navigator.geolocation.watchPosition(
         (pos) => {
@@ -179,7 +198,6 @@ function Map({ user, profile, onSignInClick }) {
       return
     }
     loadFavorites()
-    
   }, [user])
 
   const loadFavorites = async () => {
@@ -298,7 +316,24 @@ function Map({ user, profile, onSignInClick }) {
     } catch (e) {}
   }
 
-  // Force fresh location + recenter
+  // ✅ Extra protection: stop map/popup event hijacking
+  const stopMapEvent = (e) => {
+    if (!e) return
+    e.preventDefault?.()
+    e.stopPropagation?.()
+    if (e.nativeEvent) {
+      e.nativeEvent.stopPropagation?.()
+      e.nativeEvent.stopImmediatePropagation?.()
+    }
+  }
+
+  const openAIModal = (site, e) => {
+    stopMapEvent(e)
+    setSelectedSite(site)
+    setShowAIModal(true)
+  }
+
+  // ✅ Manual “My Location” jump (no follow)
   const recenterToUser = () => {
     if (!navigator.geolocation) return
 
@@ -403,7 +438,6 @@ function Map({ user, profile, onSignInClick }) {
           </div>
         )}
 
-        {/* NEW: Feed */}
         <button onClick={() => setShowFeed(true)} style={btnStyle('#111')}>
           📰{isMobile ? '' : ' Feed'}
         </button>
@@ -420,7 +454,6 @@ function Map({ user, profile, onSignInClick }) {
           📍{isMobile ? '' : ' My Location'}
         </button>
 
-        {/* Profile button */}
         {user && (
           <button onClick={() => setShowProfile(true)} style={btnStyle('#607d8b')}>
             👤{isMobile ? '' : ' Profile'}
@@ -433,7 +466,6 @@ function Map({ user, profile, onSignInClick }) {
           </button>
         )}
 
-        {/* Sign in/out (mobile) */}
         {isMobile &&
           (user ? (
             <button onClick={handleSignOut} style={btnStyle('#f44336')} title="Sign Out">
@@ -446,7 +478,6 @@ function Map({ user, profile, onSignInClick }) {
           ))}
       </div>
 
-      {/* Sign in/out (desktop) */}
       {!isMobile &&
         (user ? (
           <button
@@ -499,16 +530,17 @@ function Map({ user, profile, onSignInClick }) {
         <AddMarkerOnClick onMapClick={handleMapClick} />
         <RecenterMap target={liveUserLocation} recenterTick={recenterTick} />
 
-        {/* Live user marker */}
         {liveUserLocation && (
           <Marker position={[liveUserLocation.lat, liveUserLocation.lng]} icon={userDotIcon}>
             <Popup>
-              <div>
-                <strong>You are here</strong>
-                {locationError && (
-                  <div style={{ marginTop: 6, fontSize: 12, color: '#666' }}>{locationError}</div>
-                )}
-              </div>
+              <PopupSafeArea>
+                <div>
+                  <strong>You are here</strong>
+                  {locationError && (
+                    <div style={{ marginTop: 6, fontSize: 12, color: '#666' }}>{locationError}</div>
+                  )}
+                </div>
+              </PopupSafeArea>
             </Popup>
           </Marker>
         )}
@@ -516,84 +548,85 @@ function Map({ user, profile, onSignInClick }) {
         {sites.map((site) => (
           <Marker key={site.id} position={[site.latitude, site.longitude]}>
             <Popup maxWidth={320}>
-              <div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start' }}>
-                  <strong style={{ fontSize: 16 }}>{site.name}</strong>
+              <PopupSafeArea>
+                <div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start' }}>
+                    <strong style={{ fontSize: 16 }}>{site.name}</strong>
 
-                  {site.status === 'pending' && site.user_id === user?.id && (
-                    <span
-                      style={{
-                        background: '#ff9800',
-                        color: 'white',
-                        padding: '2px 8px',
-                        borderRadius: 4,
-                        fontSize: 11,
-                        fontWeight: 'bold',
-                        marginLeft: 8,
-                      }}
-                    >
-                      PENDING
-                    </span>
+                    {site.status === 'pending' && site.user_id === user?.id && (
+                      <span
+                        style={{
+                          background: '#ff9800',
+                          color: 'white',
+                          padding: '2px 8px',
+                          borderRadius: 4,
+                          fontSize: 11,
+                          fontWeight: 'bold',
+                          marginLeft: 8,
+                        }}
+                      >
+                        PENDING
+                      </span>
+                    )}
+                  </div>
+
+                  {site.profiles ? (
+                    <div style={{ fontSize: 12, color: '#666', marginTop: 5, marginBottom: 6 }}>
+                      Discovered by <strong>@{site.profiles.username}</strong>
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: 12, color: '#999', marginTop: 5, marginBottom: 6 }}>
+                      Discovered by <em>anonymous</em>
+                    </div>
                   )}
-                </div>
 
-                {site.profiles ? (
-                  <div style={{ fontSize: 12, color: '#666', marginTop: 5, marginBottom: 6 }}>
-                    Discovered by <strong>@{site.profiles.username}</strong>
-                  </div>
-                ) : (
-                  <div style={{ fontSize: 12, color: '#999', marginTop: 5, marginBottom: 6 }}>
-                    Discovered by <em>anonymous</em>
-                  </div>
-                )}
+                  {site.eircode && (
+                    <div style={{ fontSize: 12, color: '#444', marginBottom: 6 }}>
+                      📮 Eircode: <strong>{site.eircode}</strong>
+                    </div>
+                  )}
 
-                {site.eircode && (
-                  <div style={{ fontSize: 12, color: '#444', marginBottom: 6 }}>
-                    📮 Eircode: <strong>{site.eircode}</strong>
-                  </div>
-                )}
+                  {site.photo_url && (
+                    <img
+                      src={site.photo_url}
+                      alt={site.name}
+                      style={{
+                        width: '100%',
+                        height: 150,
+                        objectFit: 'cover',
+                        marginTop: 6,
+                        borderRadius: 6,
+                      }}
+                    />
+                  )}
 
-                {site.photo_url && (
-                  <img
-                    src={site.photo_url}
-                    alt={site.name}
+                  {site.description && <p style={{ marginTop: 8, fontSize: 14 }}>{site.description}</p>}
+
+                  <small style={{ color: '#666', display: 'block', marginTop: 5 }}>
+                    {new Date(site.created_at).toLocaleDateString()}
+                  </small>
+
+                  <button
+                    type="button"
+                    onPointerDown={stopMapEvent}
+                    onClick={(e) => openAIModal(site, e)}
                     style={{
+                      marginTop: 10,
                       width: '100%',
-                      height: 150,
-                      objectFit: 'cover',
-                      marginTop: 6,
+                      padding: 8,
+                      background: '#9C27B0',
+                      color: '#fff',
+                      border: 0,
                       borderRadius: 6,
+                      fontSize: 14,
+                      fontWeight: 'bold',
+                      cursor: 'pointer',
                     }}
-                  />
-                )}
-
-                {site.description && <p style={{ marginTop: 8, fontSize: 14 }}>{site.description}</p>}
-
-                <small style={{ color: '#666', display: 'block', marginTop: 5 }}>
-                  {new Date(site.created_at).toLocaleDateString()}
-                </small>
-
-                <button
-                  onClick={() => {
-                    setSelectedSite(site)
-                    setShowAIModal(true)
-                  }}
-                  style={{
-                    marginTop: 10,
-                    width: '100%',
-                    padding: 8,
-                    background: '#9C27B0',
-                    color: '#fff',
-                    border: 0,
-                    borderRadius: 6,
-                    fontSize: 14,
-                    fontWeight: 'bold',
-                    cursor: 'pointer',
-                  }}
-                >
-                  ✨ Reimagine with AI
-                </button>
-              </div>
+                  >
+                    ✨ Reimagine with AI
+                  </button>
+                </div>
+              </PopupSafeArea>
             </Popup>
           </Marker>
         ))}
@@ -608,8 +641,15 @@ function Map({ user, profile, onSignInClick }) {
         />
       )}
 
+      {/* ✅ IMPORTANT: pass isOpen so AIReimager actually renders */}
       {showAIModal && selectedSite && (
-        <AIReimager site={selectedSite} onClose={() => setShowAIModal(false)} />
+        <div style={{ position: 'fixed', inset: 0, zIndex: 5000 }}>
+          <AIReimager
+            isOpen={showAIModal}
+            site={selectedSite}
+            onClose={() => setShowAIModal(false)}
+          />
+        </div>
       )}
 
       {showAdminDashboard && isAdmin && (
@@ -710,52 +750,187 @@ function Map({ user, profile, onSignInClick }) {
         </div>
       )}
 
-      {/* Welcome modal */}
+      {/* ✅ Restored Welcome modal (4 boxes + strong intro + quick tutorial) */}
       {showWelcome && (
         <div
           style={{
             position: 'fixed',
             inset: 0,
-            background: 'rgba(0,0,0,0.6)',
+            background: 'rgba(0,0,0,0.65)',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            zIndex: 2000,
+            zIndex: 2500,
+            padding: 16,
+          }}
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) handleDismissWelcome()
+          }}
+          onTouchStart={(e) => {
+            if (e.target === e.currentTarget) handleDismissWelcome()
           }}
         >
           <div
             style={{
               background: 'white',
-              borderRadius: 16,
-              padding: 24,
-              maxWidth: 600,
-              width: '90%',
-              boxShadow: '0 6px 30px rgba(0,0,0,0.35)',
+              borderRadius: 18,
+              padding: 22,
+              maxWidth: 860,
+              width: '100%',
+              boxShadow: '0 10px 40px rgba(0,0,0,0.35)',
+              overflow: 'hidden',
             }}
           >
-            <h2 style={{ marginTop: 0, marginBottom: 10 }}>
-              ✨ Welcome to <span style={{ color: '#4CAF50' }}>Derelict Connect</span>
-            </h2>
-            <p style={{ marginTop: 0, color: '#555' }}>
-              We’re building a community map of derelict and long–term vacant sites in Ireland. Every pin helps show the
-              true scale of under–used buildings and land.
-            </p>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 14, alignItems: 'flex-start' }}>
+              <div>
+                <h2 style={{ margin: 0, fontSize: 26, lineHeight: 1.15 }}>
+                  🏚️ Welcome to <span style={{ color: '#16a34a' }}>Derelict Connect</span>
+                </h2>
+                <p style={{ marginTop: 8, marginBottom: 0, color: '#4b5563', fontSize: 14, maxWidth: 700 }}>
+                  A community map of derelict and long-term vacant sites across Ireland.
+                  Every pin helps show the real scale of under-used buildings and land, and pushes for action.
+                </p>
+              </div>
 
-            <div style={{ marginTop: 20, display: 'flex', justifyContent: 'flex-end' }}>
               <button
                 onClick={handleDismissWelcome}
                 style={{
-                  padding: '10px 20px',
-                  borderRadius: 8,
+                  background: 'transparent',
                   border: 'none',
-                  background: '#4CAF50',
-                  color: 'white',
-                  fontWeight: 'bold',
+                  fontSize: 26,
                   cursor: 'pointer',
-                  fontSize: 14,
+                  color: '#9ca3af',
+                  lineHeight: 1,
+                }}
+                aria-label="Close"
+                title="Close"
+              >
+                ×
+              </button>
+            </div>
+
+            <div
+              style={{
+                marginTop: 16,
+                display: 'grid',
+                gridTemplateColumns: isMobile ? '1fr 1fr' : 'repeat(4, 1fr)',
+                gap: 12,
+              }}
+            >
+              {[
+                { title: 'Map the problem', desc: 'Drop pins where buildings are derelict or long-term vacant.', icon: '📍' },
+                { title: 'Make it visible', desc: 'A public snapshot that highlights hotspots and patterns.', icon: '👀' },
+                { title: 'Support housing', desc: 'Better awareness can help unlock sites for reuse and homes.', icon: '🏠' },
+                { title: 'Community-led', desc: 'Built for locals, councils, and anyone who cares.', icon: '🤝' },
+              ].map((b) => (
+                <div
+                  key={b.title}
+                  style={{
+                    border: '1px solid #e5e7eb',
+                    borderRadius: 14,
+                    padding: 12,
+                    background: '#f9fafb',
+                  }}
+                >
+                  <div style={{ fontSize: 20 }}>{b.icon}</div>
+                  <div style={{ marginTop: 6, fontWeight: 900, color: '#111827', fontSize: 14 }}>
+                    {b.title}
+                  </div>
+                  <div style={{ marginTop: 4, color: '#6b7280', fontSize: 12, lineHeight: 1.35 }}>
+                    {b.desc}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div
+              style={{
+                marginTop: 16,
+                borderRadius: 16,
+                border: '1px solid #e5e7eb',
+                padding: 14,
+                background: 'white',
+              }}
+            >
+              <div style={{ fontWeight: 900, color: '#111827', marginBottom: 10 }}>
+                Quick tutorial (30 seconds)
+              </div>
+
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: isMobile ? '1fr' : 'repeat(3, 1fr)',
+                  gap: 10,
                 }}
               >
-                Start mapping
+                <div style={{ background: '#f3f4f6', borderRadius: 14, padding: 12 }}>
+                  <div style={{ fontWeight: 900 }}>1) Add a pin</div>
+                  <div style={{ color: '#6b7280', fontSize: 13, marginTop: 6, lineHeight: 1.35 }}>
+                    Tap the map where the site is. Add a name, details, and (if signed in) upload a photo.
+                  </div>
+                </div>
+
+                <div style={{ background: '#f3f4f6', borderRadius: 14, padding: 12 }}>
+                  <div style={{ fontWeight: 900 }}>2) Explore sites</div>
+                  <div style={{ color: '#6b7280', fontSize: 13, marginTop: 6, lineHeight: 1.35 }}>
+                    Tap a marker to view details. Use “My Location” to jump to your area (no tracking follow).
+                  </div>
+                </div>
+
+                <div style={{ background: '#f3f4f6', borderRadius: 14, padding: 12 }}>
+                  <div style={{ fontWeight: 900 }}>3) Reimagine</div>
+                  <div style={{ color: '#6b7280', fontSize: 13, marginTop: 6, lineHeight: 1.35 }}>
+                    Open a site and press “Reimagine with AI” to see what the property could become.
+                  </div>
+                </div>
+              </div>
+
+              <div style={{ marginTop: 10, color: '#6b7280', fontSize: 12 }}>
+                Tip: you can add sites anonymously, but signing in lets you upload photos and track your contributions.
+              </div>
+            </div>
+
+            <div
+              style={{
+                marginTop: 16,
+                display: 'flex',
+                gap: 10,
+                justifyContent: 'flex-end',
+                flexWrap: 'wrap',
+              }}
+            >
+              {!user && (
+                <button
+                  onClick={() => {
+                    handleDismissWelcome()
+                    onSignInClick?.()
+                  }}
+                  style={{
+                    padding: '10px 14px',
+                    borderRadius: 12,
+                    border: '1px solid #e5e7eb',
+                    background: 'white',
+                    cursor: 'pointer',
+                    fontWeight: 900,
+                  }}
+                >
+                  🔐 Sign in
+                </button>
+              )}
+
+              <button
+                onClick={handleDismissWelcome}
+                style={{
+                  padding: '10px 16px',
+                  borderRadius: 12,
+                  border: 'none',
+                  background: '#16a34a',
+                  color: 'white',
+                  cursor: 'pointer',
+                  fontWeight: 900,
+                }}
+              >
+                ✅ Start mapping
               </button>
             </div>
           </div>
@@ -824,4 +999,6 @@ function Map({ user, profile, onSignInClick }) {
 }
 
 export default Map
+
+
 

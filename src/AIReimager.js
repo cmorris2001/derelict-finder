@@ -1,5 +1,5 @@
 // src/AIReimager.js
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { supabase, supabaseAnonKey } from "./supabaseClient";
 
 // Our 5 fixed archetypes
@@ -47,7 +47,6 @@ function getSiteTitle(site) {
 }
 
 function getOriginalImageUrl(site) {
-  // Adjust if your column names differ
   return (
     site?.image_url ||
     site?.imageUrl ||
@@ -67,20 +66,8 @@ function buildPrompt({ variant, notes }) {
   return `${base} Style: ${variant.suffix}. ${extras}`;
 }
 
-/**
- * AIReimager modal
- *
- * Expected props:
- * - isOpen (boolean)
- * - onClose (function)
- * - site (object) -> the selected site record
- *
- * Optional:
- * - functionName (string) default "generate-image"
- * - onResults (function) -> called with { siteId, results } when finished
- */
 export default function AIReimager({
-  isOpen,
+  isOpen = true,
   onClose,
   site,
   functionName = "generate-image",
@@ -95,18 +82,20 @@ export default function AIReimager({
   const [isGenerating, setIsGenerating] = useState(false);
   const [globalError, setGlobalError] = useState("");
 
-  // results shape:
-  // {
-  //   bungalow: { status: "idle"|"loading"|"done"|"error", imageUrl, error, prompt },
-  //   ...
-  // }
-  const [results, setResults] = useState(() => {
+  const makeInitResults = () => {
     const init = {};
     HOME_VARIANTS.forEach((v) => {
       init[v.key] = { status: "idle", imageUrl: "", error: "", prompt: "" };
     });
     return init;
-  });
+  };
+
+  const [results, setResults] = useState(() => makeInitResults());
+  const resultsRef = useRef(results);
+
+  useEffect(() => {
+    resultsRef.current = results;
+  }, [results]);
 
   const selectedVariant = useMemo(
     () => HOME_VARIANTS.find((v) => v.key === selectedKey) || HOME_VARIANTS[0],
@@ -121,16 +110,30 @@ export default function AIReimager({
     setSelectedKey(HOME_VARIANTS[0].key);
     setIsGenerating(false);
     setGlobalError("");
-
-    const init = {};
-    HOME_VARIANTS.forEach((v) => {
-      init[v.key] = { status: "idle", imageUrl: "", error: "", prompt: "" };
-    });
-    setResults(init);
+    setResults(makeInitResults());
   }, [isOpen, siteId]);
 
+  // Escape closes
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKeyDown = (e) => {
+      if (e.key === "Escape") onClose?.();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [isOpen, onClose]);
+
+  // Prevent background scroll while modal open
+  useEffect(() => {
+    if (!isOpen) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, [isOpen]);
+
   async function callEdgeFunction(payload) {
-    // We use a direct fetch so we can show the raw response text when Vercel/Supabase returns a 500
     const supabaseUrl =
       process.env.REACT_APP_SUPABASE_URL ||
       supabase?.supabaseUrl ||
@@ -151,23 +154,19 @@ export default function AIReimager({
 
     const accessToken = session?.access_token || "";
 
-    const res = await fetch(
-      `${supabaseUrl}/functions/v1/${functionName}`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          apikey: anonKey,
-          Authorization: accessToken ? `Bearer ${accessToken}` : `Bearer ${anonKey}`,
-        },
-        body: JSON.stringify(payload),
-      }
-    );
+    const res = await fetch(`${supabaseUrl}/functions/v1/${functionName}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        apikey: anonKey,
+        Authorization: accessToken ? `Bearer ${accessToken}` : `Bearer ${anonKey}`,
+      },
+      body: JSON.stringify(payload),
+    });
 
     const text = await res.text();
 
     if (!res.ok) {
-      // Supabase functions often return JSON error, but sometimes plain text
       throw new Error(
         `Edge Function failed (${res.status}). ${text || "No response body."}`
       );
@@ -177,7 +176,6 @@ export default function AIReimager({
     try {
       data = JSON.parse(text);
     } catch {
-      // If it returns plain text but still 200
       data = { raw: text };
     }
 
@@ -269,39 +267,35 @@ export default function AIReimager({
 
     setIsGenerating(true);
 
-    // mark all loading
-    setResults((prev) => {
-      const next = { ...prev };
-      HOME_VARIANTS.forEach((v) => {
-        const prompt = buildPrompt({ variant: v, notes });
-        next[v.key] = {
-          ...next[v.key],
-          status: "loading",
-          error: "",
-          prompt,
-        };
+    try {
+      // mark all loading
+      setResults((prev) => {
+        const next = { ...prev };
+        HOME_VARIANTS.forEach((v) => {
+          const prompt = buildPrompt({ variant: v, notes });
+          next[v.key] = {
+            ...next[v.key],
+            status: "loading",
+            error: "",
+            prompt,
+          };
+        });
+        return next;
       });
-      return next;
-    });
 
-    // run in small batches to reduce rate-limit / timeout risk
-    const batchSize = 2;
-    const variants = [...HOME_VARIANTS];
+      const batchSize = 2;
+      const variants = [...HOME_VARIANTS];
 
-    for (let i = 0; i < variants.length; i += batchSize) {
-      const chunk = variants.slice(i, i + batchSize);
-      await Promise.all(
-        chunk.map(async (v) => {
-          await generateOne(v.key);
-        })
-      );
-    }
+      for (let i = 0; i < variants.length; i += batchSize) {
+        const chunk = variants.slice(i, i + batchSize);
+        await Promise.all(chunk.map((v) => generateOne(v.key)));
+      }
 
-    setIsGenerating(false);
-
-    // optional callback with final results
-    if (typeof onResults === "function") {
-      onResults({ siteId, results });
+      if (typeof onResults === "function") {
+        onResults({ siteId, results: resultsRef.current });
+      }
+    } finally {
+      setIsGenerating(false);
     }
   }
 
@@ -329,6 +323,9 @@ export default function AIReimager({
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose?.();
       }}
+      onTouchStart={(e) => {
+        if (e.target === e.currentTarget) onClose?.();
+      }}
     >
       <div
         style={{
@@ -350,6 +347,7 @@ export default function AIReimager({
 
           <button
             onClick={onClose}
+            type="button"
             style={{
               border: "none",
               background: "#6b7280",
@@ -470,6 +468,7 @@ export default function AIReimager({
                 <div style={{ whiteSpace: "pre-wrap" }}>{selected.error}</div>
 
                 <button
+                  type="button"
                   onClick={() => generateOne(selectedKey)}
                   style={{
                     marginTop: 10,
@@ -510,7 +509,6 @@ export default function AIReimager({
           />
         </div>
 
-        {/* Global error */}
         {globalError ? (
           <div
             style={{
@@ -530,6 +528,7 @@ export default function AIReimager({
         {/* Actions */}
         <div style={{ marginTop: 12, display: "flex", gap: 10 }}>
           <button
+            type="button"
             onClick={generateAll}
             disabled={isGenerating}
             style={{
@@ -552,7 +551,7 @@ export default function AIReimager({
         <div style={{ marginTop: 18 }}>
           <div style={{ fontWeight: 900, marginBottom: 8 }}>Concept options</div>
           <div style={{ color: "#6b7280", marginBottom: 10, fontSize: 14 }}>
-            You&apos;ll get one concept for each type: bungalow, 2-storey,
+            You'll get one concept for each type: bungalow, 2-storey,
             attached garage, detached garage, and a bold unique design.
           </div>
 
@@ -572,9 +571,14 @@ export default function AIReimager({
               const active = variant.key === selectedKey;
 
               return (
-                <button
+                <div
                   key={variant.key}
+                  role="button"
+                  tabIndex={0}
                   onClick={() => setSelectedKey(variant.key)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") setSelectedKey(variant.key);
+                  }}
                   style={{
                     textAlign: "left",
                     borderRadius: 12,
@@ -583,6 +587,7 @@ export default function AIReimager({
                     padding: 10,
                     cursor: "pointer",
                     overflow: "hidden",
+                    userSelect: "none",
                   }}
                   title={variant.label}
                 >
@@ -672,20 +677,20 @@ export default function AIReimager({
                       Generate this
                     </button>
                   </div>
-                </button>
+                </div>
               );
             })}
           </div>
 
           <div style={{ marginTop: 12, fontSize: 12, color: "#6b7280" }}>
-            If you ever see a 500 again, check Supabase → Edge Functions →
-            <strong> {functionName}</strong> → Logs. The exact crash reason will be
-            there.
+            If you ever see a 500 again, check Supabase → Edge Functions →{" "}
+            <strong>{functionName}</strong> → Logs.
           </div>
         </div>
       </div>
     </div>
   );
 }
+
 
 
