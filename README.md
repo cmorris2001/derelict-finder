@@ -1,183 +1,42 @@
-# Supabase CLI
+🏚️ Derelict Connect
 
-[![Coverage Status](https://coveralls.io/repos/github/supabase/cli/badge.svg?branch=main)](https://coveralls.io/github/supabase/cli?branch=main) [![Bitbucket Pipelines](https://img.shields.io/bitbucket/pipelines/supabase-cli/setup-cli/master?style=flat-square&label=Bitbucket%20Canary)](https://bitbucket.org/supabase-cli/setup-cli/pipelines) [![Gitlab Pipeline Status](https://img.shields.io/gitlab/pipeline-status/sweatybridge%2Fsetup-cli?label=Gitlab%20Canary)
-](https://gitlab.com/sweatybridge/setup-cli/-/pipelines)
+A full-stack GenAI platform mapping, cataloguing, and reimagining Ireland's derelict property crisis — one AI renovation at a time.
 
-[Supabase](https://supabase.io) is an open source Firebase alternative. We're building the features of Firebase using enterprise-grade open source tools.
+Live on vercel: https://derelict-connect.vercel.app/ |  Built solo by Christopher Morris — final year BSc Business Information Systems student at UCC, U.S. citizen relocating April 2026.
 
-This repository contains all the functionality for Supabase CLI.
+🌍 The Problem
+Ireland is facing a severe derelict property crisis. Thousands of abandoned buildings sit idle across the country while a housing shortage deepens. Derelict Connect makes this invisible problem visible — and gives people a tool to reimagine what these spaces could become.
 
-- [x] Running Supabase locally
-- [x] Managing database migrations
-- [x] Creating and deploying Supabase Functions
-- [x] Generating types directly from your database schema
-- [x] Making authenticated HTTP requests to [Management API](https://supabase.com/docs/reference/api/introduction)
+✨ Features
+🗺️ Interactive Property Map
 
-## Getting started
+Browse derelict properties across Ireland on a live geospatial map powered by React Leaflet
+Upload photos and data for derelict properties in your area
+View detailed property information including location, condition, and community submissions
 
-### Install the CLI
+🤖 AI Renovation Generator
 
-Available via [NPM](https://www.npmjs.com) as dev dependency. To install:
+Upload a photo of any derelict property and generate a realistic AI renovation using the Replicate API
+Visualise what the building could look like after restoration — instantly
 
-```bash
-npm i supabase --save-dev
-```
+📱 Social Feed
 
-To install the beta release channel:
+Share your AI-generated renovations with the community
+React and engage with reimaginations submitted by other users
+A living, growing archive of Ireland's derelict buildings and their potential
 
-```bash
-npm i supabase@beta --save-dev
-```
+🏆 Leaderboard
 
-When installing with yarn 4, you need to disable experimental fetch with the following nodejs config.
+Sign up via Magic Link authentication (no password needed)
+Earn your place on the leaderboard by submitting the most derelict properties
+Gamified community-driven data collection
 
-```
-NODE_OPTIONS=--no-experimental-fetch yarn add supabase
-```
 
-> **Note**
-For Bun versions below v1.0.17, you must add `supabase` as a [trusted dependency](https://bun.sh/guides/install/trusted) before running `bun add -D supabase`.
+🛠️ Tech Stack
+LayerTechnologyFrontendReact, React LeafletBackend/DatabaseSupabase (PostgreSQL)AI Image GenerationReplicate APIAuthSupabase Magic LinkDeploymentVercel
 
-<details>
-  <summary><b>macOS</b></summary>
+🗄️ Database Design
 
-  Available via [Homebrew](https://brew.sh). To install:
-
-  ```sh
-  brew install supabase/tap/supabase
-  ```
-
-  To install the beta release channel:
-  
-  ```sh
-  brew install supabase/tap/supabase-beta
-  brew link --overwrite supabase-beta
-  ```
-  
-  To upgrade:
-
-  ```sh
-  brew upgrade supabase
-  ```
-</details>
-
-<details>
-  <summary><b>Windows</b></summary>
-
-  Available via [Scoop](https://scoop.sh). To install:
-
-  ```powershell
-  scoop bucket add supabase https://github.com/supabase/scoop-bucket.git
-  scoop install supabase
-  ```
-
-  To upgrade:
-
-  ```powershell
-  scoop update supabase
-  ```
-</details>
-
-<details>
-  <summary><b>Linux</b></summary>
-
-  Available via [Homebrew](https://brew.sh) and Linux packages.
-
-  #### via Homebrew
-
-  To install:
-
-  ```sh
-  brew install supabase/tap/supabase
-  ```
-
-  To upgrade:
-
-  ```sh
-  brew upgrade supabase
-  ```
-
-  #### via Linux packages
-
-  Linux packages are provided in [Releases](https://github.com/supabase/cli/releases). To install, download the `.apk`/`.deb`/`.rpm`/`.pkg.tar.zst` file depending on your package manager and run the respective commands.
-
-  ```sh
-  sudo apk add --allow-untrusted <...>.apk
-  ```
-
-  ```sh
-  sudo dpkg -i <...>.deb
-  ```
-
-  ```sh
-  sudo rpm -i <...>.rpm
-  ```
-
-  ```sh
-  sudo pacman -U <...>.pkg.tar.zst
-  ```
-</details>
-
-<details>
-  <summary><b>Other Platforms</b></summary>
-
-  You can also install the CLI via [go modules](https://go.dev/ref/mod#go-install) without the help of package managers.
-
-  ```sh
-  go install github.com/supabase/cli@latest
-  ```
-
-  Add a symlink to the binary in `$PATH` for easier access:
-
-  ```sh
-  ln -s "$(go env GOPATH)/bin/cli" /usr/bin/supabase
-  ```
-
-  This works on other non-standard Linux distros.
-</details>
-
-<details>
-  <summary><b>Community Maintained Packages</b></summary>
-
-  Available via [pkgx](https://pkgx.sh/). Package script [here](https://github.com/pkgxdev/pantry/blob/main/projects/supabase.com/cli/package.yml).
-  To install in your working directory:
-
-  ```bash
-  pkgx install supabase
-  ```
-
-  Available via [Nixpkgs](https://nixos.org/). Package script [here](https://github.com/NixOS/nixpkgs/blob/master/pkgs/development/tools/supabase-cli/default.nix).
-</details>
-
-### Run the CLI
-
-```bash
-supabase bootstrap
-```
-
-Or using npx:
-
-```bash
-npx supabase bootstrap
-```
-
-The bootstrap command will guide you through the process of setting up a Supabase project using one of the [starter](https://github.com/supabase-community/supabase-samples/blob/main/samples.json) templates.
-
-## Docs
-
-Command & config reference can be found [here](https://supabase.com/docs/reference/cli/about).
-
-## Breaking changes
-
-We follow semantic versioning for changes that directly impact CLI commands, flags, and configurations.
-
-However, due to dependencies on other service images, we cannot guarantee that schema migrations, seed.sql, and generated types will always work for the same CLI major version. If you need such guarantees, we encourage you to pin a specific version of CLI in package.json.
-
-## Developing
-
-To run from source:
-
-```sh
-# Go >= 1.22
-go run . help
-```
+Relational schema built in PostgreSQL via Supabase
+Complex SQL queries support map rendering, property filtering, feed ordering, and leaderboard ranking
+Real-time capabilities via Supabase's live API
